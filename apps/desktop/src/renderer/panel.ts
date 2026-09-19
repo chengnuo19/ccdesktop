@@ -16,7 +16,8 @@ if (!list || !summary) {
 }
 
 let items: TargetStatus[] = [];
-let currentId = '';
+/** 这次要投给哪些目标，第一个是主目标。 */
+let selectedIds: string[] = [];
 
 /**
  * 每个目标一张图标，文件名就是目标 id。
@@ -64,7 +65,13 @@ function render(): void {
     item.type = 'button';
     item.className = 'item';
     item.setAttribute('role', 'radio');
-    item.setAttribute('aria-checked', String(t.id === currentId));
+    /*
+      主目标和「同时也发」分开标：前者是 radio 的选中，后者只是加进来的。
+      两者用同一种高亮的话，面板上会出现两个看起来一样的「当前目标」。
+    */
+    const rank = selectedIds.indexOf(t.id);
+    item.setAttribute('aria-checked', String(rank === 0));
+    if (rank > 0) item.dataset['extra'] = 'true';
     item.dataset['available'] = t.available === null ? 'unknown' : String(t.available);
 
     const body = document.createElement('div');
@@ -88,7 +95,20 @@ function render(): void {
     dot.className = 'state-dot';
 
     item.append(buildIcon(t), body, dot);
-    item.addEventListener('click', () => {
+    item.addEventListener('click', (e) => {
+      /*
+        Ctrl/⌘+点击 = 把这个目标也加进来，同一个问题同时发两家。
+        面板**不关闭**：加第二个的下一步多半是想看看还要不要加第三个，
+        而且关掉之后就看不见自己刚加了什么了。
+        普通点击仍然是「换到它并关闭」——最常用的那条路一步都没变。
+      */
+      if (e.ctrlKey || e.metaKey) {
+        void window.xfb.toggleTarget(t.id).then((ids) => {
+          selectedIds = ids;
+          render();
+        });
+        return;
+      }
       void window.xfb.selectTarget(t.id).then(() => window.xfb.closePanel());
     });
 
@@ -97,12 +117,23 @@ function render(): void {
 
   const usable = items.filter((t) => t.available === true).length;
   const known = items.filter((t) => t.available !== null).length;
-  summary!.textContent = known === 0 ? '检测中…' : `${usable} 个可用`;
+  /*
+    选了多个就先说这件事——它比「几个可用」重要得多，
+    而且没有别的地方能告诉用户「这次会发两份出去」。
+    Ctrl+点击这个用法也只在这儿有机会讲，不写出来没人会发现。
+  */
+  if (selectedIds.length > 1) {
+    summary!.textContent = `同时发给 ${selectedIds.length} 个`;
+  } else if (known === 0) {
+    summary!.textContent = '检测中…';
+  } else {
+    summary!.textContent = `${usable} 个可用 · Ctrl+点击可多选`;
+  }
 }
 
 window.xfb.onPanelData((data) => {
   items = data.targets;
-  currentId = data.currentTargetId;
+  selectedIds = data.currentTargetIds;
   render();
 });
 

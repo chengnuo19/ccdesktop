@@ -27,9 +27,14 @@ const DELIVER_TIMEOUT_MS = 12_000;
  */
 const RECONNECT_GRACE_MS = 4_000;
 
+/** 切标签页的等待上限。只是一次 tabs.update，比投递快得多。 */
+const ACTIVATE_TIMEOUT_MS = 2_000;
+
 export interface WebDeliverOutcome {
   ok: boolean;
   message?: string;
+  /** 这次送进了哪个标签页。生成完之后要靠它跳回去看回复。 */
+  tabId?: number;
 }
 
 export interface WebProgressUpdate {
@@ -60,6 +65,8 @@ export class BridgeServer {
 
   /** 在途请求：requestId -> 回调。 */
   private pendingDeliveries = new Map<string, (outcome: WebDeliverOutcome) => void>();
+  /** 在途的切标签页请求。 */
+  private pendingActivations = new Map<string, (ok: boolean) => void>();
   private progressHandlers = new Map<string, ProgressHandler>();
 
   constructor(private readonly token: string) {}
@@ -139,7 +146,16 @@ export class BridgeServer {
         const resolve = this.pendingDeliveries.get(msg.requestId);
         if (!resolve) return;
         this.pendingDeliveries.delete(msg.requestId);
-        resolve({ ok: msg.ok, message: msg.reason });
+        resolve({ ok: msg.ok, message: msg.reason, tabId: msg.tabId });
+        return;
+      }
+
+      case 'activate-result': {
+        const resolve = this.pendingActivations.get(msg.requestId);
+        if (!resolve) return;
+        this.pendingActivations.delete(msg.requestId);
+        if (!msg.ok) console.log(`[桥] 切标签页失败：${msg.reason ?? '（未说明原因）'}`);
+        resolve(msg.ok);
         return;
       }
 
@@ -185,6 +201,30 @@ export class BridgeServer {
           resolve(false);
         }
       }, 200);
+    });
+  }
+
+  /**
+   * 把某个标签页切到前台，用于生成完之后跳回去看回复。
+   *
+   * 不保证成功：浏览器窗口本身也受 Windows 的前台锁定限制，
+   * `windows.update({focused:true})` 可能只是让任务栏图标闪一下。
+   * 即便如此标签页也已经切对了，用户点一下任务栏就能看到，
+   * 所以失败只记日志，不弹错误——这不值得打断用户。
+   */
+  async activate(tabId: number): Promise<boolean> {
+    if (!this.connected) return false;
+    const requestId = randomUUID();
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingActivations.delete(requestId);
+        resolve(false);
+      }, ACTIVATE_TIMEOUT_MS);
+      this.pendingActivations.set(requestId, (ok) => {
+        clearTimeout(timer);
+        resolve(ok);
+      });
+      this.send({ type: 'activate', requestId, tabId });
     });
   }
 

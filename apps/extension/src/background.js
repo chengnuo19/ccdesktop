@@ -227,6 +227,10 @@ async function handleHostMessage(msg) {
           requestId: msg.requestId,
           ok: !!res?.ok,
           reason: res?.reason,
+          // 把标签页带回去：生成完之后主程序要靠它跳回来给用户看回复。
+          // 不能事后按 targetId 现查——那会儿用户可能又开了同站点的第二个
+          // 标签页，现查会跳到一个跟这次投递毫无关系的页面上。
+          tabId,
         });
       } catch {
         send({
@@ -234,6 +238,35 @@ async function handleHostMessage(msg) {
           requestId: msg.requestId,
           ok: false,
           reason: '页面脚本没有响应，试试刷新该标签页',
+        });
+      }
+      return;
+    }
+
+    case 'activate': {
+      /*
+        把标签页切到前台，用户点了绿环之后落在这里。
+
+        两步都要做：tabs.update 选中标签，windows.update 把浏览器窗口本身
+        提到前面——只做前者的话，Chrome 在后台时标签是切对了，但用户
+        什么也看不见，还以为点了没反应。
+
+        窗口那一步可能被系统的前台锁定挡下（和主程序抢前台是同一个机制），
+        那时最多是任务栏图标闪一下。标签页反正已经切好了，不值得为此报错。
+      */
+      try {
+        const tab = await chrome.tabs.update(msg.tabId, { active: true });
+        if (tab?.windowId !== undefined) {
+          await chrome.windows.update(tab.windowId, { focused: true });
+        }
+        send({ type: 'activate-result', requestId: msg.requestId, ok: true });
+      } catch (err) {
+        send({
+          type: 'activate-result',
+          requestId: msg.requestId,
+          ok: false,
+          // 最常见的是标签页已经被关掉了（Chrome 报 "No tab with id"）。
+          reason: String(err?.message ?? err),
         });
       }
       return;

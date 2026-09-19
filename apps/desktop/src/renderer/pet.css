@@ -218,6 +218,59 @@ body {
   animation: flash 900ms ease-out;
 }
 
+/*
+  多轨：圆周按目标数分成几段，每段一轨。
+  这时整圈那条弧要让位，否则两层叠在同一个半径上互相遮盖。
+*/
+.stage[data-tracks='multi'] .ring-arc {
+  display: none;
+}
+
+.ring-seg {
+  fill: none;
+  stroke-width: 2.8;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px currentColor);
+  transition: stroke 260ms ease;
+}
+
+/*
+  还在跑的那段轻轻呼吸，不转圈。
+  两段各转各的看着像坏了，而且「谁转得快」会被读成「谁快好了」——
+  那是编造的信息，探测压根儿给不了。
+*/
+.ring-seg[data-phase='sending'],
+.ring-seg[data-phase='thinking'] {
+  stroke: var(--ring-thinking);
+  animation: seg-breathe 1500ms ease-in-out infinite;
+}
+
+.ring-seg[data-phase='done'] {
+  stroke: var(--ring-done);
+}
+
+.ring-seg[data-phase='error'] {
+  stroke: var(--ring-error);
+}
+
+@keyframes seg-breathe {
+  0%,
+  100% {
+    opacity: 0.38;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/*
+  完成后可以点本体跳回目标窗口。
+  光标是唯一不占地方的提示；文字提示只在鼠标压上来时才出。
+*/
+.stage[data-phase='done'][data-revealable='true'] .pill {
+  cursor: pointer;
+}
+
 /* 出错：红环 + 抖动 */
 .stage[data-phase='error'] .ring-arc {
   stroke: var(--ring-error);
@@ -447,5 +500,11 @@ body {
   .spark,
   .wave {
     display: none;
+  }
+
+  /* 分段环的呼吸同理：停在最亮处，颜色还在，信息一点不少。 */
+  .ring-seg {
+    animation: none;
+    opacity: 1;
   }
 }

@@ -52,7 +52,18 @@ if (
 }
 
 let targets: TargetSummary[] = [];
+/**
+ * 这次要投给哪些目标，第一个是主目标。
+ * 多于一个是在目标面板里 Ctrl+点击加出来的，同一个问题会同时送往几家。
+ */
+let selectedIds: string[] = [];
+/** 主目标。图标、状态点这些只容得下一个目标的地方都看它。 */
 let currentId = '';
+
+function setSelected(ids: string[]): void {
+  selectedIds = ids;
+  currentId = ids[0] ?? '';
+}
 
 /*
   每个目标现在发不发得过去，由主进程的 checkAllTargets 推来（和目标面板同一份）。
@@ -250,8 +261,13 @@ function fallbackLetter(targetId: string): string {
 
 function paintTarget(): void {
   const t = targets.find((x) => x.id === currentId);
-  // 按钮很窄，用短名；完整名字留给悬停提示。
-  targetLabel!.textContent = t?.shortLabel ?? '未选择';
+  /*
+    按钮很窄，用短名；完整名字留给悬停提示。
+    同时发给多个目标时补一个 +N——否则「这条要发去两个地方」这件事
+    在按下回车之前完全看不出来，而它恰恰是按之前最该知道的。
+  */
+  const extra = selectedIds.length - 1;
+  targetLabel!.textContent = t ? (extra > 0 ? `${t.shortLabel} +${extra}` : t.shortLabel) : '未选择';
 
   /*
     状态点走**真实**检测结果。
@@ -268,8 +284,13 @@ function paintTarget(): void {
     available === true ? 'online' : available === false ? 'offline' : 'unknown';
 
   const reason = t ? targetReason.get(t.id) : undefined;
+  const others = selectedIds
+    .slice(1)
+    .map((id) => targets.find((x) => x.id === id)?.shortLabel ?? id)
+    .join('、');
   targetBtn!.title = t
-    ? `当前目标：${t.label}（Tab 切换）${
+    ? `当前目标：${t.label}（Tab 切换）${others ? `
+同时发给：${others}` : ''}${
         available === false ? `\n现在发不过去：${reason ?? '不可用'}` : ''
       }`
     : '切换投递目标';
@@ -345,7 +366,7 @@ function openPicker(): void {
 }
 
 async function selectTarget(id: string): Promise<void> {
-  currentId = await window.xfb.selectTarget(id);
+  setSelected(await window.xfb.selectTarget(id));
   paintTarget();
 }
 
@@ -361,7 +382,7 @@ function cycleTarget(backwards: boolean): void {
     否则连按 Tab 时，第二次会读到上一次 IPC 还没写回的旧 currentId，
     于是原地打转——连按三下只前进了一格。
   */
-  currentId = target.id;
+  setSelected([target.id]);
   paintTarget();
   void window.xfb.selectTarget(target.id);
 }
@@ -762,7 +783,12 @@ async function submit(): Promise<void> {
   clearSlots();
   autoGrow();
   setHint(null);
-  await window.xfb.submit(text, currentId);
+  /*
+    失败时文本由主进程随「输入条再次打开」一起还回来（见 restoreInput），
+    所以这里照常清空、照常隐藏，不在渲染层另留一份副本等着——
+    留副本的话两边就都成了「文本在哪」的真源，迟早对不上。
+  */
+  await window.xfb.submit(text, selectedIds);
 }
 
 /* ---------- 输入与按键 ---------- */
@@ -909,8 +935,8 @@ targetBtn.addEventListener('click', () => {
 });
 
 // 窗口每次被唤起都清空并聚焦，保证是一个干净的起点。
-window.xfb.onOpened(({ targetId }) => {
-  currentId = targetId;
+window.xfb.onOpened(({ targetIds, restore }) => {
+  setSelected(targetIds);
   paintTarget();
   closePicker();
   closePrompts();
@@ -918,11 +944,22 @@ window.xfb.onOpened(({ targetId }) => {
   clearSlots();
   mode = 'normal';
   field!.placeholder = '说点什么，回车送出；打 / 找提示词';
-  field!.value = '';
-  lastLength = 0;
+
+  /*
+    平时唤起要清空；但这一次是上条投递一个都没送到、
+    主进程把文本还回来了，那就填回去——重打一遍
+    是这个工具最不该让人做的事。
+  */
+  field!.value = restore?.text ?? '';
+  lastLength = field!.value.length;
   autoGrow();
-  setHint(null);
+  setHint(restore ? `${restore.message}，内容已经还给你` : null, restore ? 'error' : undefined);
   field!.focus();
+  /*
+    光标放末尾，不全选。还回来的文本多半是要改一两个字
+    （或者先把目标窗口打开）再发，全选之后随手一敲就全没了。
+  */
+  if (restore) field!.setSelectionRange(field!.value.length, field!.value.length);
 });
 
 /*
@@ -941,7 +978,7 @@ window.xfb.onState((state: PetState) => {
 
 void window.xfb.listTargets().then((res) => {
   targets = res.targets;
-  currentId = res.currentTargetId;
+  setSelected(res.currentTargetIds);
   paintTarget();
   autoGrow();
   field!.focus();

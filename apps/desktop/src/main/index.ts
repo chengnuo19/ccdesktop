@@ -8,12 +8,14 @@ import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, Tray, nat
 import {
   BUILTIN_TARGETS,
   INITIAL_PET_STATE,
+  aggregate,
   clipPreview,
   hasVariables,
   type Celebration,
   type CelebrationKind,
   type PetState,
   type ProbeConfidence,
+  type TrackState,
 } from '@xfb/shared';
 import {
   createInputWindow,
@@ -27,7 +29,7 @@ import {
   expandPetWindow,
   restorePetWindow,
 } from './windows.js';
-import { orchestrator } from './orchestrator.js';
+import { orchestrator, type SubmitOutcome } from './orchestrator.js';
 import { win32Helper } from './win32/helper.js';
 import { BridgeServer, loadOrCreateToken } from './bridge/server.js';
 import { countPrompts, openPromptsFile, recordUsage, rememberedValues, savePrompt, searchPrompts } from './prompts.js';
@@ -130,8 +132,27 @@ let bridgeToken = '';
  */
 let refreshTrayMenu: (() => void) | null = null;
 
-/** 当前选中的投递目标。默认先指向 ChatGPT Classic。 */
-let currentTargetId = 'chatgpt-classic';
+/**
+ * 当前选中的投递目标，第一个是主目标。
+ *
+ * 绝大多数时候只有一个。可以在目标面板里 Ctrl+点击加上第二个，
+ * 同一个问题就会同时送往两家——用来对照着看谁答得好。
+ * 这个数组**永远非空**：面板那边不允许把最后一个取消掉，
+ * 否则按下回车会什么都不发生，而且没有任何提示。
+ */
+let currentTargetIds: string[] = ['chatgpt-classic'];
+
+/** 主目标。只需要一个名字的地方（托盘的 radio、日志）用它。 */
+function primaryTargetId(): string {
+  return currentTargetIds[0] ?? 'chatgpt-classic';
+}
+
+/**
+ * 上一次输入条是怎么弹出来的。
+ * 投递失败把文本还回去时照着原样再弹一次——用户点悬浮标唤起的，
+ * 就不该让它这回突然跑到屏幕中央去。
+ */
+let lastInputAnchor: 'pet' | 'screen' = 'screen';
 
 /**
  * 唤起输入条。
@@ -139,12 +160,19 @@ let currentTargetId = 'chatgpt-classic';
  * `anchor` 决定它出现在哪儿：'pet' 贴着悬浮标弹出，'screen' 落在屏幕中间偏上。
  * 详见 windows.ts 的 positionInputWindow。
  */
-function showInput(anchor: 'pet' | 'screen' = 'screen'): void {
+/** 投递失败后把文本还回来时捎带的东西。 */
+interface InputRestore {
+  text: string;
+  message: string;
+}
+
+function showInput(anchor: 'pet' | 'screen' = 'screen', restore?: InputRestore): void {
   if (!inputWindow) {
     console.warn('[输入条] inputWindow 不存在');
     return;
   }
   markInputShown();
+  lastInputAnchor = anchor;
   positionInputWindow(inputWindow, anchor === 'pet' ? petWindow : null);
   inputWindow.show();
   inputWindow.focus();
@@ -155,7 +183,39 @@ function showInput(anchor: 'pet' | 'screen' = 'screen'): void {
     用户打的字会跑进原来那个应用里。
     所以再借助助手强抢一次前台，它有绕开前台锁定的手段。
   */
-  void focusAndNotify();
+  void focusAndNotify(restore);
+}
+
+/**
+ * 投递全都失败时，把用户刚打的那段话还回去。
+ *
+ * 提交时输入框是**立刻**清空并隐藏的——那一刻还不知道送没送到。
+ * 等到知道的时候文本已经不在任何地方了：剪贴板也指望不上，
+ * 投递路径写的那两次恰好被剪贴板历史的静默窗口排除掉。
+ * 于是一次「目标应用收在托盘里」就能让人白打一整段。
+ *
+ * 只有**一个都没送到**才还。部分成功时再弹出来，用户很可能顺手又发一次，
+ * 那就变成重复投递了。
+ */
+/**
+ * 提交，并在全都没送到时把文本还回去。
+ *
+ * IPC 和自检都走这一条：回填如果只挂在 IPC 那头，
+ * 「投递失败会不会丢文本」就取决于是从哪个入口发的——
+ * 而 XFB_SELFTEST 存在的意义正是替人跑一遍真实链路。
+ */
+async function submitAndReport(targetIds: string[], text: string): Promise<SubmitOutcome> {
+  console.log(`[投递] 目标=${targetIds.join('、')} 文本长度=${text.length}`);
+  inputWindow?.hide();
+  const outcome = await orchestrator.submit(targetIds, text);
+  if (!outcome.ok) restoreInput(text, outcome.message ?? '投递失败');
+  return outcome;
+}
+
+function restoreInput(text: string, message: string): void {
+  if (!inputWindow || inputWindow.isDestroyed()) return;
+  console.log(`[输入条] 投递失败，文本已交还（${text.length} 字）：${message}`);
+  showInput(lastInputAnchor, { text, message });
 }
 
 /**
@@ -164,7 +224,7 @@ function showInput(anchor: 'pet' | 'screen' = 'screen'): void {
  * 顺序不能反：抢前台会重新激活窗口，把之前给 input 元素的焦点冲掉，
  * 表现就是输入条看着在前台、却一个字也打不进去。
  */
-async function focusAndNotify(): Promise<void> {
+async function focusAndNotify(restore?: InputRestore): Promise<void> {
   if (!inputWindow) return;
   try {
     const handle = inputWindow.getNativeWindowHandle();
@@ -176,7 +236,12 @@ async function focusAndNotify(): Promise<void> {
   }
   if (!inputWindow || inputWindow.isDestroyed()) return;
   inputWindow.webContents.focus();
-  inputWindow.webContents.send('input:opened', { targetId: currentTargetId });
+  /*
+    回填的文本跟着 opened 一起送，不单独发一条消息。
+    渲染层收到 opened 会把输入框清空（那是正常唤起该做的事），
+    分两条发就成了竞态：清空那条后到，刚还回去的文本又没了。
+  */
+  inputWindow.webContents.send('input:opened', { targetIds: currentTargetIds, restore });
   // 不 await：检测要查窗口、问扩展，几百毫秒起步，不该拖着光标进输入框。
   void refreshInputStatuses();
 }
@@ -288,7 +353,7 @@ async function refreshPanelStatuses(): Promise<void> {
   if (!targetPanel || targetPanel.isDestroyed() || !targetPanel.isVisible()) return;
   const targets = await checkAllTargets(bridge);
   if (targetPanel.isDestroyed()) return;
-  targetPanel.webContents.send('panel:data', { targets, currentTargetId });
+  targetPanel.webContents.send('panel:data', { targets, currentTargetIds });
 }
 
 /**
@@ -347,13 +412,19 @@ function buildTray(): void {
       },
       { type: 'separator' },
       {
-        label: '投递目标',
+        /*
+          托盘这里只管单选——点一下就是「换到它」，顺带丢掉附加目标。
+          多选放在目标面板里（Ctrl+点击）：那边有图标、有可用性状态点，
+          看得见哪个目标现在真能发，而托盘菜单给不了这些。
+          标题把当前数量带出来，不然在面板里加的第二个目标在这儿完全看不见。
+        */
+        label: currentTargetIds.length > 1 ? `投递目标（${currentTargetIds.length} 个）` : '投递目标',
         submenu: BUILTIN_TARGETS.map((t) => ({
-          label: t.label,
+          label: currentTargetIds.includes(t.id) && t.id !== primaryTargetId() ? `${t.label} ·同时发` : t.label,
           type: 'radio' as const,
-          checked: t.id === currentTargetId,
+          checked: t.id === primaryTargetId(),
           click: () => {
-            currentTargetId = t.id;
+            currentTargetIds = [t.id];
             refreshMenu();
           },
         })),
@@ -467,22 +538,50 @@ function registerIpc(): void {
       shortLabel: t.shortLabel,
       delivery: t.delivery,
     })),
-    currentTargetId,
+    currentTargetIds,
   }));
 
+  /** 单选：换主目标，并丢掉附加的那些。 */
   ipcMain.handle('targets:select', (_e, targetId: string) => {
-    if (BUILTIN_TARGETS.some((t) => t.id === targetId)) currentTargetId = targetId;
-    return currentTargetId;
+    if (BUILTIN_TARGETS.some((t) => t.id === targetId)) currentTargetIds = [targetId];
+    refreshTrayMenu?.();
+    return currentTargetIds;
   });
 
-  ipcMain.handle('pet:submit', async (_e, payload: { targetId?: string; text: string }) => {
-    const targetId = payload.targetId ?? currentTargetId;
-    console.log(
-      `[投递] 目标=${targetId}（渲染层给的=${payload.targetId ?? '未指定'}，主进程记的=${currentTargetId}）文本长度=${payload.text.length}`,
-    );
-    inputWindow?.hide();
-    await orchestrator.submit(targetId, payload.text);
+  /**
+   * 多选：把一个目标加进这次投递，或者取消掉。
+   *
+   * 不允许取消到一个不剩——那样按回车会静悄悄地什么都不发生。
+   * 想换目标就用普通点击（单选），这里只管「再加一个」。
+   */
+  ipcMain.handle('targets:toggle', (_e, targetId: string) => {
+    if (!BUILTIN_TARGETS.some((t) => t.id === targetId)) return currentTargetIds;
+    if (currentTargetIds.includes(targetId)) {
+      if (currentTargetIds.length > 1) {
+        currentTargetIds = currentTargetIds.filter((id) => id !== targetId);
+      }
+    } else {
+      currentTargetIds = [...currentTargetIds, targetId];
+    }
+    refreshTrayMenu?.();
+    return currentTargetIds;
   });
+
+  ipcMain.handle('pet:submit', async (_e, payload: { targetIds?: string[]; text: string }) => {
+    const targetIds = payload.targetIds?.length ? payload.targetIds : currentTargetIds;
+    if (!payload.targetIds?.length) {
+      console.log(`[投递] 渲染层未指定目标，用主进程记的 ${currentTargetIds.join('、')}`);
+    }
+    return submitAndReport(targetIds, payload.text);
+  });
+
+  /**
+   * 跳到目标窗口去看回复。
+   *
+   * 「发完不打扰」不等于「不给回去的路」：生成完那一刻用户唯一想做的事
+   * 就是去看它说了什么，而在这之前那还得自己把窗口找出来。
+   */
+  ipcMain.handle('pet:reveal', async () => orchestrator.reveal());
 
   ipcMain.on('input:close', () => inputWindow?.hide());
 
@@ -603,7 +702,7 @@ function registerIpc(): void {
     检测桌面端要跨进程问助手，让用户对着空面板等几百毫秒不合适。
   */
   ipcMain.handle('panel:ready', async () => {
-    const initial = { targets: pendingStatuses(), currentTargetId };
+    const initial = { targets: pendingStatuses(), currentTargetIds };
     void refreshPanelStatuses();
     return initial;
   });
@@ -627,11 +726,51 @@ function startStateDemo(): void {
     { ...INITIAL_PET_STATE, phase: 'done', targetId: 'demo', confidence, progress: 1 },
   ];
 
+  const track = (
+    targetId: string,
+    phase: TrackState['phase'],
+    confidence: ProbeConfidence | null,
+  ): TrackState => ({
+    targetId,
+    phase,
+    confidence,
+    progress: null,
+    elapsedMs: 0,
+    errorMessage: phase === 'error' ? '没找到目标窗口' : null,
+    revealable: phase !== 'sending' && phase !== 'error',
+  });
+
+  /*
+    多轨帧走真的 aggregate，不手写聚合结果。
+
+    手写的话，演示里的配色和庆祝可能完全正常，真实运行时却不是那么回事——
+    而这个开关存在的意义就是把真实形态摆出来看。
+  */
+  const multi = (tracks: TrackState[]): PetState => ({
+    ...INITIAL_PET_STATE,
+    ...aggregate(tracks),
+    targetId: tracks[0]?.targetId ?? null,
+    tracks,
+  });
+
+  const a = 'chatgpt-classic';
+  const b = 'gemini-desktop';
+
   const frames: PetState[] = [
     { ...INITIAL_PET_STATE },
     ...round('exact'),
     ...round('approximate'),
     ...round('coarse'),
+    /*
+      双轨一轮。第三帧（一半绿、一半还在呼吸）是这里最值得看的：
+      分段环到底能不能一眼看出「一家已经好了、另一家还在写」，就看它。
+      最后一帧是部分失败：一红一绿，整体仍然算 done。
+    */
+    multi([track(a, 'sending', null), track(b, 'sending', null)]),
+    multi([track(a, 'thinking', 'approximate'), track(b, 'thinking', 'coarse')]),
+    multi([track(a, 'done', 'approximate'), track(b, 'thinking', 'coarse')]),
+    multi([track(a, 'done', 'approximate'), track(b, 'done', 'coarse')]),
+    multi([track(a, 'done', 'approximate'), track(b, 'error', null)]),
     { ...INITIAL_PET_STATE, phase: 'error', errorMessage: '没找到目标窗口' },
   ];
 
@@ -641,7 +780,10 @@ function startStateDemo(): void {
     const frame = frames[i % frames.length];
     i += 1;
     if (!frame) return;
-    console.log(`[演示模式] ${frame.phase}${frame.confidence ? ` · ${frame.confidence}` : ''}`);
+    console.log(
+      `[演示模式] ${frame.phase}${frame.confidence ? ` · ${frame.confidence}` : ''}` +
+        (frame.tracks.length > 1 ? ` · ${frame.tracks.length} 轨` : ''),
+    );
     /*
       演示帧是直接推给渲染层的，绕开了编排器，所以庆祝得在这儿手动过一道。
       不这么做的话 XFB_DEMO 就唯独演不了庆祝——而那正是现在最该用它调的东西。
@@ -750,10 +892,33 @@ if (!gotLock) {
     */
     const selfTest = process.env['XFB_SELFTEST'];
     if (selfTest) {
+      // 逗号分隔就能一次验多轨：`XFB_SELFTEST=chatgpt-classic,gemini-desktop`。
+      // 分段圆环、win32 的串行排队、按最低档庆祝，全都只有多目标时才走得到。
+      const ids = selfTest
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean);
       setTimeout(() => {
-        console.log(`[自检] 向 ${selfTest} 投递一条测试消息`);
-        void orchestrator.submit(selfTest, '悬浮标自检消息，请用一句话回复');
+        console.log(`[自检] 向 ${ids.join('、')} 投递一条测试消息`);
+        void submitAndReport(ids, '悬浮标自检消息，请用一句话回复');
       }, 6_000);
+
+      /*
+        再加 XFB_REVEAL=1，生成完之后自动跳一次目标窗口。
+
+        跟 XFB_CLIPTEST 是同一个理由：这条路平时只有用户亲手点绿环才走得到，
+        脚本驱动不了；而它坏掉时不报错，只是点下去没反应。
+        默认不开：跳转会抢前台，不该让普通自检顺手把用户的窗口抽走。
+      */
+      if (process.env['XFB_REVEAL'] === '1') {
+        const off = orchestrator.onChange((state) => {
+          if (state.phase !== 'done') return;
+          off();
+          void orchestrator.reveal().then((res) => {
+            console.log(`[自检] 跳转结果：${res.ok ? '成功' : '失败'}${res.targetId ? ` → ${res.targetId}` : ''}`);
+          });
+        });
+      }
     }
 
     // 起本地桥，供浏览器扩展连接（网页端目标靠它）。

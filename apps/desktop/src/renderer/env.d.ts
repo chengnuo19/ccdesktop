@@ -47,14 +47,25 @@ export interface ClipSummary {
   copiedAt: number;
 }
 
+/** 投递全都失败时随 opened 一起回来的文本，见主进程的 restoreInput。 */
+export interface InputRestore {
+  text: string;
+  message: string;
+}
+
 export interface XfbApi {
   getState(): Promise<PetState>;
   onState(cb: (state: PetState) => void): () => void;
-  onOpened(cb: (payload: { targetId: string }) => void): () => void;
+  onOpened(cb: (payload: { targetIds: string[]; restore?: InputRestore }) => void): () => void;
   onTargetStatus(cb: (targets: TargetStatus[]) => void): () => void;
-  listTargets(): Promise<{ targets: TargetSummary[]; currentTargetId: string }>;
-  selectTarget(targetId: string): Promise<string>;
-  submit(text: string, targetId?: string): Promise<void>;
+  listTargets(): Promise<{ targets: TargetSummary[]; currentTargetIds: string[] }>;
+  /** 单选：换主目标，丢掉附加的。 */
+  selectTarget(targetId: string): Promise<string[]>;
+  /** 多选：把一个目标加进这次投递或取消掉。不会让它变成零个。 */
+  toggleTarget(targetId: string): Promise<string[]>;
+  submit(text: string, targetIds?: string[]): Promise<{ ok: boolean; message?: string }>;
+  /** 跳到目标窗口去看回复。多目标时连点会依次轮换。 */
+  revealTarget(): Promise<{ ok: boolean; targetId?: string }>;
   closeInput(): void;
   activate(): void;
   openMenu(): void;
@@ -94,7 +105,8 @@ export interface TargetStatus {
 
 export interface PanelData {
   targets: TargetStatus[];
-  currentTargetId: string;
+  /** 这次要投给哪些目标，第一个是主目标。通常只有一个。 */
+  currentTargetIds: string[];
 }
 
 declare global {

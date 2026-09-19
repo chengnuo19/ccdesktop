@@ -20,22 +20,36 @@ const IDLE_COLLAPSE_MS = 10_000;
 const stage = document.getElementById('stage');
 const pill = document.getElementById('pill');
 const ringArc = document.getElementById('ringArc');
+const ringSegs = document.getElementById('ringSegs');
 const bubble = document.getElementById('bubble');
 const btnCompose = document.getElementById('btnCompose');
 const btnMenu = document.getElementById('btnMenu');
 /* 圆心那个点。只有庆祝动画会主动碰它，平时归 CSS 管，所以不进下面的必需检查。 */
 const core = document.getElementById('core');
 
-if (!stage || !pill || !ringArc || !bubble || !btnCompose || !btnMenu) {
+if (!stage || !pill || !ringArc || !ringSegs || !bubble || !btnCompose || !btnMenu) {
   throw new Error('悬浮标的 DOM 结构不完整');
 }
 
 let currentState: PetState | null = null;
 
+/** 这一轮里还有没有能跳过去看的目标。 */
+function canReveal(state: PetState): boolean {
+  return state.tracks.some((t) => t.revealable && t.phase !== 'sending');
+}
+
 function describe(state: PetState): string | null {
   switch (state.phase) {
     case 'error':
       return state.errorMessage ?? '出错了';
+    case 'done':
+      /*
+        只在鼠标压上来的时候才提示可以点。
+        每次完成都弹一句的话，天天在用的工具看到第一百遍
+        就只剩噪音；而鼠标都移过来了，这句话恰好是他要的。
+      */
+      if (!pointerOnPill || !canReveal(state)) return null;
+      return state.tracks.length > 1 ? '点一下去看，连点换下一个' : '点一下去看回复';
     case 'thinking':
       // 等太久才提示，并说明这是估算的，别让用户以为是精确进度。
       if (state.elapsedMs >= SLOW_HINT_AFTER_MS) {
@@ -44,6 +58,74 @@ function describe(state: PetState): string | null {
       return null;
     default:
       return null;
+  }
+}
+
+/** 段与段之间留的空隙，弧长单位。留窄了两段会糊成一圈看不出分段。 */
+const SEG_GAP = 7;
+
+/**
+ * 多轨时把圆周切成几段，每段表示一个目标。
+ *
+ * 不让每段各自转圈：两段反着转看着像坏了，而且「谁转得快」会被读成
+ * 「谁快要好了」——那是编造的信息。每段只用颜色表示自己走到哪了，
+ * 还在生成的那段轻轻呼吸，和整圈那条「不画假进度」是同一条原则。
+ */
+function paintSegments(state: PetState): void {
+  const n = state.tracks.length;
+  const multi = n > 1;
+  stage!.dataset['tracks'] = multi ? 'multi' : 'single';
+  stage!.dataset['revealable'] = String(canReveal(state));
+
+  if (!multi) {
+    if (ringSegs!.childElementCount > 0) ringSegs!.replaceChildren();
+    return;
+  }
+
+  const span = RING_CIRCUMFERENCE / n;
+  const len = Math.max(span - SEG_GAP, 4);
+
+  /*
+    段数没变就只改状态，不重建 DOM。
+
+    重建会让 CSS 动画从头起拍：另一轨每报一次进度，这一轨的呼吸就被
+    打断重来，看着像在抽搐——而进度回报是每几百毫秒一次的。
+  */
+  if (ringSegs!.childElementCount !== n) {
+    ringSegs!.replaceChildren(
+      ...state.tracks.map((_, i) => {
+        const seg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        seg.setAttribute('class', 'ring-seg');
+        seg.setAttribute('cx', '26');
+        seg.setAttribute('cy', '26');
+        seg.setAttribute('r', '23');
+        seg.setAttribute('stroke-dasharray', `${len} ${RING_CIRCUMFERENCE - len}`);
+        // 负的 offset 让第 i 段顺着圆周往后排，起点仍在 12 点方向。
+        seg.setAttribute('stroke-dashoffset', String(-i * span));
+        return seg;
+      }),
+    );
+  }
+
+  state.tracks.forEach((track, i) => {
+    const seg = ringSegs!.children[i];
+    if (seg instanceof SVGElement) seg.dataset['phase'] = track.phase;
+  });
+}
+
+/**
+ * 气泡单独画。
+ *
+ * 它的内容现在还取决于鼠标在不在本体上（done 时提示「点一下去看」），
+ * 而鼠标移进移出不会带来新的 PetState，所以不能只在 render 里画。
+ */
+function paintBubble(): void {
+  const text = currentState ? describe(currentState) : null;
+  if (text) {
+    bubble!.textContent = text;
+    bubble!.removeAttribute('hidden');
+  } else {
+    bubble!.setAttribute('hidden', '');
   }
 }
 
@@ -63,13 +145,8 @@ function render(state: PetState): void {
     ringArc!.setAttribute('stroke-dashoffset', '0');
   }
 
-  const text = describe(state);
-  if (text) {
-    bubble!.textContent = text;
-    bubble!.removeAttribute('hidden');
-  } else {
-    bubble!.setAttribute('hidden', '');
-  }
+  paintSegments(state);
+  paintBubble();
 
   // 忙起来就立刻展开；回到待机才重新开始计时收拢。
   if (state.phase === 'idle') scheduleCollapse();
@@ -391,9 +468,26 @@ window.xfb.onHover((hovering) => {
   pointerOnPill = hovering;
   if (hovering) expand();
   else scheduleCollapse();
+  // done 时的「点一下去看」只在鼠标压上来时出现，所以这里要重画一次。
+  paintBubble();
 });
 
 /* ---------- 按钮 ---------- */
+
+/*
+  完成之后点本体 = 跳到目标窗口去看回复。
+
+  “发完不打扰”不等于“不给回去的路”：生成完那一刻用户唯一想做的事
+  就是去看它说了什么，而在这之前那还得自己把窗口找出来。
+  绿环本来就是纯装饰，让它可点是它最自然的用处。
+
+  这里只能括在 done 里：待机态的本体是胶囊，那两个按钮有自己的事。
+*/
+pill.addEventListener('click', (e) => {
+  if (currentState?.phase !== 'done') return;
+  if (e.target instanceof Element && e.target.closest('.act')) return;
+  void window.xfb.revealTarget();
+});
 
 btnCompose.addEventListener('click', () => window.xfb.activate());
 

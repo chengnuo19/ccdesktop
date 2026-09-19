@@ -37,14 +37,24 @@ export type HostMessage =
   /** 让扩展把这段文字送进指定的网页目标并发送。 */
   | { type: 'deliver'; requestId: string; targetId: string; text: string }
   /** 询问某个网页目标当前是否可用（有没有打开着的标签页）。 */
-  | { type: 'ping-target'; requestId: string; targetId: string };
+  | { type: 'ping-target'; requestId: string; targetId: string }
+  /**
+   * 把某个网页目标的标签页切到前台。
+   *
+   * 生成完了之后用户想做的事就是去看回复，这条消息是那条路。
+   * 用 tabId 而不是 targetId：投递发生时那个标签页是确定的，
+   * 之后用户可能又开了同一站点的第二个标签页，按 targetId 现查会跳错地方。
+   */
+  | { type: 'activate'; requestId: string; tabId: number };
 
 /** 扩展 → 主程序 */
 export type ExtensionMessage =
   /** 扩展上线，报告自己能覆盖哪些目标。 */
   | { type: 'ready'; token: string; availableTargets: string[] }
-  /** 投递结果。 */
-  | { type: 'deliver-result'; requestId: string; ok: boolean; reason?: string }
+  /** 投递结果。tabId 是这次实际送进了哪个标签页，用于事后跳回去看。 */
+  | { type: 'deliver-result'; requestId: string; ok: boolean; reason?: string; tabId?: number }
+  /** 切标签页的结果。浏览器窗口可能被系统的前台锁定挡住，不保证成功。 */
+  | { type: 'activate-result'; requestId: string; ok: boolean; reason?: string }
   /**
    * 网页端探测到的生成进度。
    * 扩展能读到 DOM，所以这里的 confidence 一律是 'exact'。

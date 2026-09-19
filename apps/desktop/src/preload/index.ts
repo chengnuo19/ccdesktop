@@ -54,7 +54,14 @@ export interface TargetStatus {
 
 export interface PanelData {
   targets: TargetStatus[];
-  currentTargetId: string;
+  /** 这次要投给哪些目标，第一个是主目标。通常只有一个。 */
+  currentTargetIds: string[];
+}
+
+/** 投递全都失败时随 opened 一起回来的文本，见主进程的 restoreInput。 */
+export interface InputRestore {
+  text: string;
+  message: string;
 }
 
 const api = {
@@ -80,21 +87,41 @@ const api = {
     return () => ipcRenderer.off('input:target-status', handler);
   },
 
-  /** 输入条被唤起时触发，用于聚焦输入框、同步当前目标。 */
-  onOpened: (cb: (payload: { targetId: string }) => void): (() => void) => {
-    const handler = (_e: unknown, payload: { targetId: string }) => cb(payload);
+  /**
+   * 输入条被唤起时触发，用于聚焦输入框、同步当前目标。
+   *
+   * `restore` 有值时这次不是普通唤起，而是上一条投递全都没送到、
+   * 把文本还回来了——输入框要填回它而不是照常清空。
+   */
+  onOpened: (
+    cb: (payload: { targetIds: string[]; restore?: InputRestore }) => void,
+  ): (() => void) => {
+    const handler = (_e: unknown, payload: { targetIds: string[]; restore?: InputRestore }) =>
+      cb(payload);
     ipcRenderer.on('input:opened', handler);
     return () => ipcRenderer.off('input:opened', handler);
   },
 
-  listTargets: (): Promise<{ targets: TargetSummary[]; currentTargetId: string }> =>
+  listTargets: (): Promise<{ targets: TargetSummary[]; currentTargetIds: string[] }> =>
     ipcRenderer.invoke('targets:list'),
 
-  selectTarget: (targetId: string): Promise<string> =>
+  /** 单选：换主目标，丢掉附加的。 */
+  selectTarget: (targetId: string): Promise<string[]> =>
     ipcRenderer.invoke('targets:select', targetId),
 
-  submit: (text: string, targetId?: string): Promise<void> =>
-    ipcRenderer.invoke('pet:submit', { text, targetId }),
+  /** 多选：把一个目标加进这次投递或取消掉。不会让它变成零个。 */
+  toggleTarget: (targetId: string): Promise<string[]> =>
+    ipcRenderer.invoke('targets:toggle', targetId),
+
+  submit: (text: string, targetIds?: string[]): Promise<{ ok: boolean; message?: string }> =>
+    ipcRenderer.invoke('pet:submit', { text, targetIds }),
+
+  /**
+   * 跳到目标窗口去看回复。
+   * 同时发给多个目标时连点会依次轮换，详见 orchestrator.reveal。
+   */
+  revealTarget: (): Promise<{ ok: boolean; targetId?: string }> =>
+    ipcRenderer.invoke('pet:reveal'),
 
   closeInput: (): void => ipcRenderer.send('input:close'),
 

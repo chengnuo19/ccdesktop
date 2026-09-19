@@ -74,12 +74,93 @@ export interface Celebration {
   offsetY: number;
 }
 
+/**
+ * 一条投递轨道：一次提交送往一个目标的完整经过。
+ *
+ * 同一个问题可以同时发给多个目标（比如拿 ChatGPT 和 Gemini 的回答对照着看），
+ * 各自的投递链路、探测档位、完成时刻都不一样，所以每个目标独立记一轨。
+ * 只发一个目标时就是一条轨——**不为多目标这件事给单目标增加任何代价**。
+ */
+export interface TrackState {
+  targetId: string;
+  /** 这一轨走到哪了。没有 idle：轨道只在一次提交期间存在。 */
+  phase: Exclude<PetPhase, 'idle'>;
+  confidence: ProbeConfidence | null;
+  progress: number | null;
+  elapsedMs: number;
+  errorMessage: string | null;
+  /**
+   * 这一轨完成后能不能跳过去看。
+   *
+   * 桌面端要等投递拿到 hwnd 才有，网页端要等扩展报回 tabId，
+   * 都可能拿不到（窗口找不到、扩展中途被回收），所以是可选的。
+   */
+  revealable: boolean;
+}
+
+/** 探测档位的可靠性高低，数值越大越可信。 */
+const CONFIDENCE_RANK: Record<ProbeConfidence, number> = {
+  coarse: 0,
+  approximate: 1,
+  exact: 2,
+};
+
+/**
+ * 多轨聚合成一个整体状态。
+ *
+ * 悬浮标只有一个圆环，它必须对「现在到底算什么状态」给一个说法。
+ * 规则按「最坏情况优先」排：只要还有一轨没走完，整体就还没走完。
+ *
+ * 档位取**所有轨里最低的那个**，这是「动画的确信程度不该超过探测的确信程度」
+ * 的直接推论：两轨里有一轨只能靠像素差分，那么「全都说完了」这个判断
+ * 整体上就只有像素差分那么可信，不该因为另一轨是 exact 就升格去撒花。
+ */
+export function aggregate(tracks: TrackState[]): {
+  phase: PetPhase;
+  confidence: ProbeConfidence | null;
+  elapsedMs: number;
+  errorMessage: string | null;
+} {
+  if (tracks.length === 0) {
+    return { phase: 'idle', confidence: null, elapsedMs: 0, errorMessage: null };
+  }
+
+  const elapsedMs = Math.max(...tracks.map((t) => t.elapsedMs));
+  const failed = tracks.filter((t) => t.phase === 'error');
+
+  let phase: PetPhase;
+  if (tracks.some((t) => t.phase === 'sending')) phase = 'sending';
+  else if (tracks.some((t) => t.phase === 'thinking')) phase = 'thinking';
+  else if (failed.length === tracks.length) phase = 'error';
+  else phase = 'done';
+
+  // 只看有档位的轨：正在投递的那几轨还没定档，拿 null 去比会把结果带偏。
+  const ranked = tracks
+    .map((t) => t.confidence)
+    .filter((c): c is ProbeConfidence => c !== null)
+    .sort((a, b) => CONFIDENCE_RANK[a] - CONFIDENCE_RANK[b]);
+
+  /*
+    部分失败也要说出来。全挂了就报第一条真正的原因；只挂了一部分时，
+    圆环上那一段已经是红的，气泡只需要补一句谁挂了——
+    这时整体仍然是 done，不能让一个目标的失败把另一个的成功也盖掉。
+  */
+  let errorMessage: string | null = null;
+  if (failed.length === tracks.length) errorMessage = failed[0]?.errorMessage ?? '投递失败';
+  else if (failed.length > 0) errorMessage = `${failed.length} 个目标没送到`;
+
+  return { phase, confidence: ranked[0] ?? null, elapsedMs, errorMessage };
+}
+
 /** 悬浮窗渲染进程拿到的完整状态快照。 */
 export interface PetState {
   phase: PetPhase;
-  /** 本轮投递去了哪个目标。idle 时为 null。 */
+  /**
+   * 本轮投递去了哪个目标。idle 时为 null。
+   * 多目标时这里是**第一个**目标——只需要一个名字的地方（日志、气泡）用它。
+   */
   targetId: string | null;
-  /** 这一轮的进度是怎么探测的，决定圆环画法。 */
+  /** 这一轮的进度是怎么探测的，决定圆环画法。多轨时是最低的那一档。 */
   confidence: ProbeConfidence | null;
   /**
    * 0~1 的进度。
@@ -94,6 +175,13 @@ export interface PetState {
   elapsedMs: number;
   /** error 时的说明文案，直接展示给用户。 */
   errorMessage: string | null;
+  /**
+   * 每个目标一轨。只发一个目标时长度为 1，idle 时为空。
+   *
+   * 上面那几个字段是它聚合出来的结果，留着是因为绝大多数地方
+   * （气泡文案、是否展开、闲置收拢）只关心整体，不关心分轨。
+   */
+  tracks: TrackState[];
 }
 
 export const INITIAL_PET_STATE: PetState = {
@@ -103,6 +191,7 @@ export const INITIAL_PET_STATE: PetState = {
   progress: null,
   elapsedMs: 0,
   errorMessage: null,
+  tracks: [],
 };
 
 /**
@@ -113,8 +202,14 @@ export const INITIAL_PET_STATE: PetState = {
  */
 export const THINKING_TIMEOUT_MS = 180_000;
 
-/** done 状态停留多久后自动回到 idle。 */
-export const DONE_LINGER_MS = 4_000;
+/**
+ * done 状态停留多久后自动回到 idle。
+ *
+ * 从 4 秒加到 8 秒，是因为绿环现在可以点——点了就切到目标窗口去看回复。
+ * 4 秒只够「看见它完成了」；而这一刻用户多半正在别的窗口里打字，
+ * 抬头、认出绿环、把鼠标挪过去再点，4 秒到不了，点击入口等于摆设。
+ */
+export const DONE_LINGER_MS = 8_000;
 
 /** error 状态停留多久后自动回到 idle。 */
 export const ERROR_LINGER_MS = 6_000;

@@ -25,6 +25,12 @@
         <svg class="ring" viewBox="0 0 52 52" aria-hidden="true">
           <circle class="ring-track" cx="26" cy="26" r="23" />
           <circle class="ring-arc" id="ringArc" cx="26" cy="26" r="23" />
+          <!--
+            同时发给多个目标时，圆周按目标数切成几段，每段单独表示一轨。
+            单目标时这里是空的，走上面那条整圈的 ring-arc——
+            最常用的那条路一个字节都没多花。
+          -->
+          <g id="ringSegs"></g>
         </svg>
 
         <div class="actions" id="actions">
