@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>悬浮标 · 设置</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1c1b19;
+        --fg-dim: #6b6862;
+        --bg: #faf9f7;
+        --border: #dedbd5;
+        --accent: #3b6fd4;
+        --ok: #1f8a54;
+        --err: #c0392b;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #f0ede8;
+          --fg-dim: #a39f98;
+          --bg: #232220;
+          --border: #3d3b37;
+          --accent: #79a9ff;
+          --ok: #56d69a;
+          --err: #ff7a7a;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 20px;
+        min-width: 380px;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      h1 { margin: 0 0 4px; font-size: 15px; }
+      p.lead { margin: 0 0 16px; color: var(--fg-dim); font-size: 12px; }
+      label { display: block; margin-bottom: 6px; font-size: 12px; color: var(--fg-dim); }
+      input {
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: transparent;
+        color: var(--fg);
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 12.5px;
+      }
+      input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+      .row { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+      button {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 7px;
+        background: var(--accent);
+        color: #fff;
+        font-family: inherit;
+        font-size: 12.5px;
+        cursor: pointer;
+      }
+      button:hover { filter: brightness(1.08); }
+      .status { font-size: 12px; }
+      .status[data-tone='ok'] { color: var(--ok); }
+      .status[data-tone='err'] { color: var(--err); }
+      .hint {
+        margin-top: 16px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        color: var(--fg-dim);
+        font-size: 11.5px;
+      }
+      code {
+        padding: 1px 4px;
+        border-radius: 3px;
+        background: rgba(128, 128, 128, 0.18);
+        font-family: ui-monospace, Consolas, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>悬浮标 · 网页端</h1>
+    <p class="lead">让浏览器里的 ChatGPT / Gemini 能接收桌面悬浮标发来的消息。</p>
+
+    <label for="token">连接密钥</label>
+    <input id="token" type="text" placeholder="粘贴桌面端显示的密钥" autocomplete="off" spellcheck="false" />
+
+    <div class="row">
+      <button id="save" type="button">保存</button>
+      <span class="status" id="status"></span>
+    </div>
+
+    <div class="hint">
+      密钥在桌面端「悬浮标」的托盘菜单里可以找到。<br />
+      本地任何网页都能连上 <code>127.0.0.1</code>，所以必须靠这个密钥确认身份，
+      否则别的页面也能驱动你的 AI 客户端发消息。
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

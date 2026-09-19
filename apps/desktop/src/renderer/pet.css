@@ -1,0 +1,451 @@
+/*
+  悬浮标本体。
+
+  两种形态，一个元素：
+    待机 → 125×52 的横向胶囊，露出两个按钮；
+    忙碌 → 收拢成 52×52 的圆，圆周上跑进度环。
+  因为圆角始终是 26px（= 高度的一半），width 从 125 过渡到 52 时
+  胶囊会自然地收成正圆，不需要换元素，也不会有跳变。
+
+  窗口透明、浮在任意壁纸上，所以本体带足投影，浅色背景下也立得住。
+*/
+
+/*
+  配色全部转接自 tokens.css。这里以前自带一套暖褐色，
+  和输入条的冷灰蓝、面板的第三种底色互不相干，凑在一起像三个程序。
+  本文件只保留「悬浮标特有」的那几个别名和动画节奏。
+*/
+:root {
+  /*
+    胶囊底色必须**不透明**：它浮在任意壁纸上，
+    半透明会让它在亮壁纸上直接消失。用的是全局那个不随材质变的实色。
+  */
+  --pill-bg: var(--surface-solid);
+  --pill-border: var(--line-strong);
+  --icon: var(--fg);
+  --icon-dim: var(--fg-dim);
+  --divider: var(--line-strong);
+  --ring-track: rgba(255, 255, 255, 0.1);
+  /* 进度环走全局语义色：别让悬浮标和输入条对「蓝 = 在忙」给出两个不同的蓝 */
+  --ring-thinking: var(--accent);
+  --ring-done: var(--ok);
+  --ring-error: var(--error);
+
+  /* 形态切换的节奏。带一点回弹，收拢和展开都更有生气。 */
+  --morph: 460ms cubic-bezier(0.5, 1.35, 0.5, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/*
+  尺寸一律跟随窗口，不写死像素值。
+  窗口的物理尺寸会随系统 DPI 缩放变化，写死 px 会让内容被窗口边缘裁掉。
+*/
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--font);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+/*
+  舞台整体平移，而不是只挪本体——粒子是以本体为圆心撒的，
+  两者必须一起动，否则窗口贴着屏幕边撑开时，花会撒在离本体半寸远的地方。
+
+  偏移只在庆祝撑大窗口期间非零，由主进程算好传下来（见 windows.ts 的
+  expandPetWindow）：窗口朝四周扩，贴边的那几边扩不动，扩出来的框
+  就不再以本体为中心，得让本体自己往回挪，保住它的屏幕坐标不变。
+*/
+.stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transform: translate(var(--off-x, 0px), var(--off-y, 0px));
+}
+
+/* ---------- 本体 ---------- */
+
+/*
+  宽度 = 两个按钮(50×2) + 一条分隔线(1) + 左右留白(24) = 125。
+  按钮增减时这里要跟着改，否则胶囊两侧会空出一块。
+*/
+.pill {
+  position: relative;
+  width: 125px;
+  /* 窗口再窄也不越界，宁可胶囊收窄也不被裁切 */
+  max-width: calc(100% - 8px);
+  height: 52px;
+  /* 恒为高度的一半：胶囊两端始终是半圆，收到 52 宽时正好成正圆 */
+  border-radius: 26px;
+  background: var(--pill-bg);
+  border: 1px solid var(--pill-border);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42), 0 2px 6px rgba(0, 0, 0, 0.3);
+  /* height 与 border-radius 也要过渡，否则闲置收拢是「跳」过去的 */
+  transition:
+    width var(--morph),
+    height var(--morph),
+    border-radius var(--morph),
+    opacity 300ms ease,
+    box-shadow 300ms ease;
+  display: grid;
+  place-items: center;
+}
+
+/* 一旦离开待机，就收拢成圆 */
+.stage:not([data-phase='idle']) .pill {
+  width: 52px;
+}
+
+/*
+  闲置收拢。
+
+  这是与 data-phase 正交的一个维度：闲着的时候业务状态仍然是 idle，
+  所以不能靠新增 phase 来做，只能另开一个属性。
+
+  两种圆必须一眼分得开，否则用户不知道它是在闲着还是在生成：
+    闲置圆 → 40px、半透明、无环无点
+    忙碌圆 → 52px、不透明、有环有搏动的中心点
+  圆角始终取高度的一半，否则收下去就不是正圆了。
+*/
+.stage[data-phase='idle'][data-collapsed='true'] .pill {
+  width: 40px;
+  height: 40px;
+  border-radius: 20px;
+  /*
+    0.72 而不是更低：再淡下去在深色壁纸上就几乎看不见了，
+    用户会找不到它在哪。「不打扰」不等于「藏起来」。
+  */
+  opacity: 0.72;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.32);
+}
+
+/* 收拢后圆心留一个极淡的点，让它看起来是「待命」而不是一块脏斑 */
+.stage[data-phase='idle'][data-collapsed='true'] .core {
+  opacity: 0.5;
+  transform: scale(0.8);
+  background: var(--icon-dim);
+  transition-delay: 160ms;
+}
+
+/* 收拢时按钮跟着淡出，和忙碌时一个道理：别在变窄的胶囊里被挤变形 */
+.stage[data-collapsed='true'] .actions {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------- 进度环 ---------- */
+
+.ring {
+  position: absolute;
+  /* 固定 52×52 并居中：胶囊收拢到这个尺寸时两者正好重合 */
+  width: 52px;
+  height: 52px;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) rotate(-90deg); /* 进度从 12 点方向起步 */
+  overflow: visible;
+  opacity: 0;
+  /* 展开回胶囊时先让环淡出，免得它横在胶囊中间 */
+  transition: opacity 180ms ease;
+  pointer-events: none;
+}
+
+.stage:not([data-phase='idle']) .ring {
+  opacity: 1;
+  /* 等胶囊收得差不多了再显形 */
+  transition: opacity 220ms ease 160ms;
+}
+
+.ring-track,
+.ring-arc {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.ring-track {
+  stroke: var(--ring-track);
+  stroke-width: 2.5;
+}
+
+/*
+  圆周长 2πr，r=23 → 约 144.5。以下所有 dash 数值都基于这个值。
+*/
+.ring-arc {
+  stroke: var(--ring-thinking);
+  stroke-width: 2.8;
+  stroke-dasharray: 144.5;
+  stroke-dashoffset: 144.5;
+  filter: drop-shadow(0 0 4px currentColor);
+  transition: stroke 260ms ease, stroke-dashoffset 320ms ease;
+}
+
+/* 投递中：短弧快速绕圈 */
+.stage[data-phase='sending'] .ring-arc {
+  stroke-dasharray: 24 120.5;
+  animation: travel 680ms linear infinite;
+  transition: none;
+}
+
+/* 生成中（粗糙/半精确）：长弧稳稳地转，不假装知道进度 */
+.stage[data-phase='thinking'][data-mode='indeterminate'] .ring-arc {
+  stroke-dasharray: 46 98.5;
+  animation: travel 1500ms cubic-bezier(0.62, 0.08, 0.38, 0.94) infinite;
+  transition: none;
+}
+
+/* 生成中（精确）：真实进度，不转圈 */
+.stage[data-phase='thinking'][data-mode='determinate'] .ring-arc {
+  stroke-dasharray: 144.5;
+  animation: none;
+}
+
+/* 完成：整圈闭合变绿，短促亮一下 */
+.stage[data-phase='done'] .ring-arc {
+  stroke: var(--ring-done);
+  stroke-dasharray: 144.5;
+  stroke-dashoffset: 0;
+  animation: flash 900ms ease-out;
+}
+
+/* 出错：红环 + 抖动 */
+.stage[data-phase='error'] .ring-arc {
+  stroke: var(--ring-error);
+  stroke-dasharray: 144.5;
+  stroke-dashoffset: 0;
+}
+
+.stage[data-phase='error'] .pill {
+  animation: shake 420ms ease-in-out;
+}
+
+@keyframes travel {
+  to {
+    stroke-dashoffset: -144.5;
+  }
+}
+
+@keyframes flash {
+  0% { opacity: 1; }
+  45% { opacity: 0.42; }
+  100% { opacity: 1; }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  22% { transform: translateX(-4px); }
+  48% { transform: translateX(4px); }
+  74% { transform: translateX(-2px); }
+}
+
+/* ---------- 圆心标记 ---------- */
+
+/*
+  收拢之后圆心不能是空的。这里放一个随状态变色的小圆点：
+  忙碌时轻轻搏动，完成时定住，出错时变红。
+*/
+.core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--ring-thinking);
+  opacity: 0;
+  transform: scale(0.4);
+  transition: opacity 200ms ease, transform 260ms ease, background 260ms ease;
+}
+
+.stage:not([data-phase='idle']) .core {
+  opacity: 1;
+  transform: scale(1);
+  transition-delay: 200ms;
+}
+
+.stage[data-phase='sending'] .core,
+.stage[data-phase='thinking'] .core {
+  animation: throb 1.25s ease-in-out infinite 460ms;
+}
+
+.stage[data-phase='done'] .core {
+  background: var(--ring-done);
+}
+
+.stage[data-phase='error'] .core {
+  background: var(--ring-error);
+}
+
+@keyframes throb {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.5); opacity: 1; }
+}
+
+/* ---------- 按钮 ---------- */
+
+.actions {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  /* 收拢时内容不能把圆撑开 */
+  overflow: hidden;
+  white-space: nowrap;
+  transition: opacity 160ms ease;
+}
+
+/* 收拢时按钮先行淡出，避免在变窄的胶囊里被挤压变形 */
+.stage:not([data-phase='idle']) .actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+.act {
+  -webkit-app-region: no-drag;
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--icon-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.act:hover {
+  color: var(--icon);
+  background: var(--hit);
+}
+
+.act:active {
+  transform: scale(0.92);
+}
+
+.act svg {
+  width: 20px;
+  height: 20px;
+}
+
+.divider {
+  width: 1px;
+  height: 20px;
+  background: var(--divider);
+  flex-shrink: 0;
+}
+
+.chevron {
+  transition: transform 200ms ease;
+}
+
+.act[aria-expanded='true'] .chevron {
+  transform: rotate(180deg);
+}
+
+/* ---------- 状态气泡 ---------- */
+
+.bubble {
+  position: absolute;
+  bottom: calc(50% + 32px);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 208px;
+  padding: 4px 9px;
+  border-radius: var(--r-item);
+  background: var(--surface-solid);
+  color: var(--fg);
+  font-size: 10.5px;
+  line-height: 1.3;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.34);
+  pointer-events: none;
+}
+
+.bubble[hidden] {
+  display: none;
+}
+
+/* ---------- 庆祝 ---------- */
+
+/*
+  汇聚与迸散的粒子。
+
+  位置和轨迹全部由 JS 的 Web Animations API 算（螺旋要按角度和半径逐帧插值，
+  写成 CSS keyframes 就得为每个角度各写一套）。这里只管长相，
+  以及一条硬约束：**绝不能吃鼠标事件**。
+
+  它们铺在整个窗口上，而窗口这时正撑到 360×260——挡住点击的话，
+  庆祝那两秒里用户点不到桌面上任何东西，而且完全看不出是被什么挡的。
+*/
+.spark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  line-height: 1;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+/* 送达用的星点是文本符号，能被 CSS 染色；完成用的是彩色 emoji，染不动也不需要染 */
+.spark[data-tint] {
+  color: var(--accent);
+}
+
+/*
+  完成时从圆心推出去的那圈涟漪。
+  和进度环同心，但要大得多——它是「说完了」的那一下扩散，不是进度。
+*/
+.wave {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 52px;
+  height: 52px;
+  margin: -26px 0 0 -26px;
+  border-radius: 50%;
+  border: 2px solid var(--ring-thinking);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.wave[data-tone='done'] {
+  border-color: var(--ring-done);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring-arc,
+  .core,
+  .pill,
+  .pill {
+    transition: width 1ms;
+  }
+
+  /*
+    减弱动效时整套庆祝都不放——这类动画正是这个设置要挡的东西。
+    结果态（绿环闭合）由 data-phase 照常给出，信息一点不少，
+    少的只是那两秒的表演。
+  */
+  .spark,
+  .wave {
+    display: none;
+  }
+}

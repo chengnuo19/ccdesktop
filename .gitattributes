@@ -1,0 +1,5 @@
+* text=auto eol=lf
+
+# PowerShell 5.1 需要 UTF-8 BOM 才能正确解析含中文的脚本。
+# 标成 binary 可以避免 git 的换行/编码转换破坏 BOM。
+*.ps1 binary

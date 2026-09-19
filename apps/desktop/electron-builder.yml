@@ -1,0 +1,47 @@
+# 打包配置。
+#
+# 最要紧的是 extraResources：helper 脚本和托盘图标必须随包分发，
+# 漏了程序会直接瘫（投递不工作、托盘看不见），而且 dev 模式完全正常，
+# 只有装完才暴露。
+
+appId: com.xuanfubiao.desktop
+# 用 ASCII 作产品名：它会进安装目录和 userData 路径，中文在某些工具链下会出事。
+# 给用户看的中文名放在快捷方式上。
+productName: XuanFuBiao
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+
+# 代码里已经写好 app.isPackaged -> process.resourcesPath 的分支，
+# 这里的 to 就是那个分支要找的位置。
+extraResources:
+  - from: resources/win32-helper.ps1
+    to: win32-helper.ps1
+  - from: resources/tray.png
+    to: tray.png
+  - from: resources/tray@2x.png
+    to: tray@2x.png
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # 悬浮标是个常驻小工具，没有签名证书；这里不配签名，
+  # 首次运行 SmartScreen 可能拦一下，属预期。
+  artifactName: ${productName}-${version}-setup.${ext}
+
+nsis:
+  # 不用一键安装：让用户看得见装到哪、能自己改目录。
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 悬浮标
+  # 卸载时清掉自启项，别在注册表里留垃圾。
+  deleteAppDataOnUninstall: false

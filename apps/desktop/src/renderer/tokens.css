@@ -1,0 +1,118 @@
+/*
+  三个窗口共用的设计 token。
+
+  在此之前 input / pet / panel 各写各的 :root，结果是三套底色、
+  两个 accent 蓝、两个成功绿，而 panel.css 的注释还写着「保持一套语言」。
+  凡是三处都要认的值，一律收进这里，别再回到各自的 :root。
+
+  背景材质有两套，由 <html data-material> 选：
+    acrylic  —— 窗口交给 Win11 DWM 画真模糊，圆角与投影也归它
+    fallback —— 系统不支持或用户关了「透明效果」，自己用渐变画伪玻璃
+  取哪一套由主进程在启动时判定（见 windows.ts 的 detectAcrylic），
+  经 URL query 传进来。渲染层不自己猜。
+*/
+
+:root {
+  /*
+    字体链：拉丁走 Segoe UI Variable，中文落到雅黑 UI。
+    顺序不能反——雅黑打头会让 "ChatGPT Classic" 这种拉丁串
+    在 12px 上笔画发糊、字距发散。雅黑 UI 又比雅黑更紧，优先它。
+  */
+  --font: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei',
+    'PingFang SC', system-ui, sans-serif;
+  /* 键帽用等宽：比例字体下单个字母的键帽会塌成一条竖缝 */
+  --font-mono: 'Cascadia Mono', Consolas, ui-monospace, monospace;
+
+  /* 圆角。四档够用，别再往里加新值。 */
+  --r-card: 14px;
+  --r-control: 10px;
+  --r-item: 8px;
+  --r-chip: 999px;
+
+  /* 前景。三档对应：正文、次要信息、几乎只是占位的提示。 */
+  --fg: #eef1f7;
+  --fg-dim: rgba(238, 241, 247, 0.6);
+  --fg-faint: rgba(238, 241, 247, 0.34);
+
+  /* 语义色。取 pet.css 原有的那一组，input.css 的 #6ea8ff/#47d18b 作废。 */
+  --accent: #79a9ff;
+  --ok: #56d69a;
+  --warn: #ffb454;
+  --error: #ff7a7a;
+
+  /* 描边。strong 留给聚焦态，静息一律用 line。 */
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+
+  /* 命中反馈。sel 是键盘选中，要比鼠标 hover 更明显，否则分不清焦点在哪。 */
+  --hit: rgba(255, 255, 255, 0.06);
+  --hit-strong: rgba(255, 255, 255, 0.1);
+  --hit-sel: rgba(121, 169, 255, 0.16);
+
+  --t-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
+  --t-base: 180ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /*
+    面板系的基色，只给 RGB 三个分量。
+
+    深色底在这套 UI 里要出现在四个浓度上：亚克力的薄层、浮层与吸顶标题的厚层、
+    悬浮标胶囊的实色、状态点的描边。写成四个独立的色值时它们互相差一两度，
+    凑在一起就是"说不出哪里不对"——而这正是这次重构要消灭的东西。
+    所以只留一个基色，浓度交给 alpha。
+  */
+  --tint: 22, 24, 31;
+
+  /**
+   * 同一个基色的四档浓度。
+   *
+   * veil —— 盖得住底下内容，但仍留一点通透，配 backdrop-filter 用（浮层、吸顶标题）。
+   * solid —— 全不透明。给那些"透了就穿帮"的地方：悬浮标浮在任意壁纸上，
+   *          半透明会让它在亮壁纸上直接消失。
+   * dot-ring —— 状态点的描边，让小圆点从深色图标上浮起来。
+   */
+  --surface-veil: rgba(var(--tint), 0.92);
+  --surface-solid: rgb(var(--tint));
+  --dot-ring: rgba(var(--tint), 0.9);
+}
+
+/*
+  亚克力：窗口本身不透明（transparent: false），背后由 DWM 画模糊。
+  面板底色因此要薄——盖太厚就把辛苦拿到的模糊糊死了。
+  圆角和投影都交给系统，CSS 这边必须归零，
+  否则会在方角的窗口里画出一个圆角矩形，四角露出四块底。
+*/
+/*
+  0.78 而不是更薄。
+
+  薄底色的模糊确实更好看，但亚克力透出来的是**下面那扇窗口**，
+  不是壁纸——底下压着一张白底网页时，整条会被顶成浅灰，
+  上面的浅色文字直接糊掉。实测 0.45 就是这个下场：
+  同一条上半截浅、下半截深，字在浅的那半截几乎读不出来。
+
+  0.78 仍然能看出背景在动（模糊质感还在），但不论底下是什么，
+  文字对比度都守得住。微软自己的深色亚克力也在 0.8 上下，不是巧合。
+*/
+:root[data-material='acrylic'] {
+  --surface: rgba(var(--tint), 0.78);
+  --card-radius: 0;
+  --card-shadow: none;
+  --card-border: none;
+  --card-margin: 0;
+}
+
+/*
+  伪玻璃：窗口仍是透明的，本体自己画。
+  斜向渐变给出光从左上来的方向感，内高光提亮上沿，
+  再加一层近距离投影托住底边——单靠一层大范围投影会显得飘。
+*/
+:root[data-material='fallback'] {
+  --surface: linear-gradient(145deg, rgba(44, 47, 58, 0.95) 0%, rgba(var(--tint), 0.96) 100%);
+  --card-radius: var(--r-card);
+  --card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.11),
+    0 18px 42px rgba(0, 0, 0, 0.5),
+    0 2px 6px rgba(0, 0, 0, 0.3);
+  --card-border: 1px solid var(--line);
+  --card-margin: 8px;
+}
+

@@ -1,0 +1,217 @@
+/*
+  目标选择面板。
+
+  配色、圆角、字体全部来自 tokens.css——这里以前自己写了一套 :root，
+  注释还写着「跟胶囊和输入条保持一套语言」，但三处的数值其实对不上。
+  凡是三个窗口都要认的值，都别在这个文件里出现。
+*/
+
+* {
+  box-sizing: border-box;
+}
+
+/*
+  窗口是固定高度的（见 windows.ts 的 PANEL_SIZE），
+  所以这里让面板撑满整扇窗：撑不满的话底下会露出一条没有底色的带子，
+  走亚克力时那条带子是直接透出来的桌面，非常明显。
+
+  留白由 body 的 padding 给，面板自己不带 margin——
+  百分比高度要父元素有确定高度才解析得了，交给 body 更省事。
+*/
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  width: 100%;
+  padding: var(--card-margin);
+  background: transparent;
+  font-family: var(--font);
+  color: var(--fg);
+  user-select: none;
+  /* 同输入条：要滚的是 .list，这一层冒出滚动条只会压在圆角上 */
+  overflow: hidden;
+}
+
+.panel {
+  min-height: 100%;
+  padding: 10px;
+  border-radius: var(--card-radius);
+  background: var(--surface);
+  border: var(--card-border);
+  box-shadow: var(--card-shadow);
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 2px 6px 8px;
+}
+
+.panel-title {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.panel-sub {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+
+/* ---------- 列表 ---------- */
+
+/* 目标以后可能变多，超出就在面板内滚动，不要被窗口边缘裁掉 */
+.list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.list::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px;
+  border: none;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--fg-dim);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.item:hover {
+  background: var(--hit);
+  color: var(--fg);
+}
+
+.item[aria-checked='true'] {
+  background: var(--hit-sel);
+  color: var(--fg);
+}
+
+/*
+  不可用的目标不灰到看不见——用户仍然可以选它（比如先选好再去开应用），
+  只是要一眼看出「现在发过去会失败」。
+*/
+.item[data-available='false'] .item-name {
+  color: var(--fg-faint);
+}
+
+/*
+  图标自带圆角底色，容器不能再叠一层灰底，否则会在圆角外露出一圈；
+  底色只留给文字占位用。
+
+  尺寸取 36px 而不是更小：图标靠「老式电脑 / 普通窗口 / 有没有地球」
+  区分五个目标，再小这些细节就糊成一团，只剩橙蓝两色可辨。
+*/
+.icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: var(--r-control);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* 图标还没配好时的占位：用品牌首字母顶上，总比空白强 */
+.icon-fallback {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--r-control);
+  background: var(--hit);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-dim);
+}
+
+.item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.item-name {
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-meta {
+  margin-top: 1px;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 桌面端/网页端的区分做成小标签，比纯文字好扫 */
+.kind {
+  display: inline-block;
+  padding: 0 4px;
+  margin-right: 5px;
+  border-radius: 4px;
+  background: var(--hit);
+  font-size: 9.5px;
+  line-height: 14px;
+  vertical-align: 1px;
+}
+
+.state-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+
+.item[data-available='true'] .state-dot {
+  background: var(--ok);
+  box-shadow: 0 0 6px rgba(86, 214, 154, 0.55);
+}
+
+/* 检测尚未返回时轻轻呼吸，表示还在查 */
+.item[data-available='unknown'] .state-dot {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.9; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .state-dot {
+    animation: none !important;
+  }
+}

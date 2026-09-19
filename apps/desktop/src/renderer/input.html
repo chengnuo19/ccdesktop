@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>悬浮标 · 输入</title>
+    <!-- tokens 必须排在前面：下面那份样式表通篇在读它定义的变量 -->
+    <link rel="stylesheet" href="./tokens.css" />
+    <link rel="stylesheet" href="./input.css" />
+    <script>
+      /*
+        材质决定圆角、投影和外边距，必须赶在第一帧之前定下来。
+        所以这段内联在 head 里同步跑，不能挪进 input.ts——
+        模块脚本是 defer 的，轮到它执行时页面已经按默认值画过一次了，
+        看到的是卡片尺寸跳一下。
+
+        认不出参数就当伪玻璃：那条路不依赖任何系统能力，错了也只是不够好看，
+        而反过来猜成亚克力会在不支持的机器上画出一个四角露底的方框。
+      */
+      document.documentElement.dataset.material =
+        new URLSearchParams(location.search).get('material') === 'acrylic' ? 'acrylic' : 'fallback';
+    </script>
+  </head>
+  <body>
+    <div class="bar" id="bar">
+      <div class="row">
+        <!--
+          当前投递目标，点一下切换。
+          图标与目标面板共用同一批文件，两处认的是同一个视觉。
+          可用状态是叠在图标右下角的小圆点，不再单独占一份宽度。
+        -->
+        <div class="target-wrap">
+          <button class="target" id="targetBtn" type="button" title="切换投递目标">
+            <span class="target-icon" id="targetIcon">
+              <img id="targetIconImg" alt="" />
+              <span class="dot" id="targetDot"></span>
+            </span>
+            <span class="target-label" id="targetLabel">加载中…</span>
+          </button>
+
+          <!--
+            目标选择浮层挂在按钮自己的定位上下文里，用 top: 100% 跟着按钮走。
+            早先它是 .bar 的子元素、靠写死的 top/left 对齐，
+            改一下内边距或按钮高度就会错位，且错得不明显。
+          -->
+          <div class="picker" id="picker" hidden></div>
+        </div>
+
+        <!-- 把目标和输入框分开。目标按钮已经没有边框了，没有这条线两者会糊成一片 -->
+        <span class="row-divider" aria-hidden="true"></span>
+
+        <!--
+          用 textarea 而不是 input：提示词普遍是多行长文本。
+          Enter 送出、Shift+Enter 换行，由 input.ts 显式处理。
+        -->
+        <textarea
+          id="field"
+          class="field"
+          rows="1"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="说点什么，回车送出；打 / 找提示词"
+        ></textarea>
+      </div>
+
+      <!-- 提示词列表：复用 picker 的视觉，但独占一块、向下撑开窗口 -->
+      <div class="prompts" id="prompts" hidden></div>
+
+      <!--
+        底部工具条。排在列表**后面**是刻意的：它得始终钉在整条的最下沿，
+        夹在输入框和展开的列表中间会把两者切断。
+
+        左边归内容（状态文字，或打下 / 时的分类 chip），右边归键帽。
+        按需出现：输入框为空时给一遍快捷键，开始打字就让位；
+        有状态要说（送出中、出错、正在填变量）时无条件显示。
+      -->
+      <div class="hint" id="hint">
+        <span class="hint-main" id="hintMain"></span>
+        <!--
+          默认那排键帽写死在这儿，**不要**改成由脚本填。
+
+          脚本填的话，它只有等 input:opened 到了才出现，而那条 IPC 要等
+          主进程先找 PowerShell 助手抢完前台——助手冷启动要一两秒，
+          这段时间里工具条是空的一条，看着像没画完。
+          它的内容本来就是固定的，让第一帧就带着它。
+        -->
+        <span class="hint-keys" id="hintKeys">
+          <kbd>Enter</kbd> 送出 · <kbd>Tab</kbd> 换目标 · <kbd>/</kbd> 提示词 ·
+          <kbd>Ctrl+Shift+V</kbd> 剪贴板
+        </span>
+      </div>
+    </div>
+
+    <script type="module" src="./input.ts"></script>
+  </body>
+</html>

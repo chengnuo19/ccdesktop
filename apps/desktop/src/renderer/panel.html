@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>悬浮标 · 目标</title>
+    <!-- tokens 必须排在前面：下面那份样式表通篇在读它定义的变量 -->
+    <link rel="stylesheet" href="./tokens.css" />
+    <link rel="stylesheet" href="./panel.css" />
+    <script>
+      /* 同 input.html：材质决定圆角与外边距，要赶在第一帧之前定下来。 */
+      document.documentElement.dataset.material =
+        new URLSearchParams(location.search).get('material') === 'acrylic' ? 'acrylic' : 'fallback';
+    </script>
+  </head>
+  <body>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">投递到</span>
+        <span class="panel-sub" id="summary">检测中…</span>
+      </div>
+      <div class="list" id="list"></div>
+    </div>
+
+    <script type="module" src="./panel.ts"></script>
+  </body>
+</html>

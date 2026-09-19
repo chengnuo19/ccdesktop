@@ -1,0 +1,19 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# 这些依赖必须允许运行自己的安装脚本，否则装完是空壳：
+#   electron           postinstall 负责下载运行时二进制
+#   esbuild            要装平台专用可执行文件
+#   electron-winstaller / app-builder-bin
+#                      打包工具链，缺了 electron-builder 跑不起来
+#
+# 字段名随 pnpm 版本搬过两次：pnpm 10 在 package.json 的 "pnpm" 字段，
+# pnpm 11 挪到本文件的 onlyBuiltDependencies，11.5 起改成下面的 allowBuilds
+# （要逐个显式写 true/false）。没表态的依赖会被静默忽略，install 直接失败退出 1，
+# 表现为「pnpm dev 起不来」而不是「某个包没装好」——不看日志很难联想到这里。
+allowBuilds:
+  electron: true
+  esbuild: true
+  electron-winstaller: true
+  app-builder-bin: true

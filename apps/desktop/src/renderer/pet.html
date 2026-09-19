@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>悬浮标</title>
+    <!--
+      tokens 必须排在前面：下面那份样式表通篇在读它定义的变量。
+
+      这里**不**设 data-material：悬浮标要不规则形状和鼠标穿透，
+      窗口只能是透明的，享受不到亚克力，也就没有两条路可选。
+      它用的是那几个不随材质变的 token（--surface-solid、语义色、字体）。
+    -->
+    <link rel="stylesheet" href="./tokens.css" />
+    <link rel="stylesheet" href="./pet.css" />
+  </head>
+  <body>
+    <!--
+      两种形态共用一个 .pill 容器：
+      待机时是横向胶囊（两个按钮），送出后收拢成 52×52 的圆，圆上跑进度环。
+      形态切换靠 CSS 过渡 width，所以是连续变形而不是两个元素互相替换。
+    -->
+    <div class="stage" id="stage" data-phase="idle" data-mode="indeterminate">
+      <div class="pill" id="pill">
+        <!-- 进度环：只在收拢成圆之后可见 -->
+        <svg class="ring" viewBox="0 0 52 52" aria-hidden="true">
+          <circle class="ring-track" cx="26" cy="26" r="23" />
+          <circle class="ring-arc" id="ringArc" cx="26" cy="26" r="23" />
+        </svg>
+
+        <div class="actions" id="actions">
+          <!-- 编辑：唤起输入条，主操作 -->
+          <button class="act" id="btnCompose" type="button" title="输入（Ctrl+Alt+Space）" aria-label="输入">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3z" />
+              <path d="M14.5 7.5 17 10" />
+            </svg>
+          </button>
+
+          <span class="divider"></span>
+
+          <!-- 展开：目标切换与其它操作 -->
+          <button class="act" id="btnMenu" type="button" title="更多" aria-label="更多" aria-expanded="false">
+            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="m6 9.5 6 6 6-6" />
+            </svg>
+          </button>
+        </div>
+
+        <!-- 收拢成圆之后，中心显示一个随状态变化的小标记 -->
+        <div class="core" id="core" aria-hidden="true"></div>
+      </div>
+
+      <!-- 状态气泡：出错或等待过久时出现。显示在胶囊上方 -->
+      <div class="bubble" id="bubble" hidden></div>
+    </div>
+
+    <script type="module" src="./pet.ts"></script>
+  </body>
+</html>
