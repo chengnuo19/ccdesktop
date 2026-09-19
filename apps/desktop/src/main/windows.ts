@@ -1,5 +1,5 @@
 /**
- * 三个窗口：常驻桌面的悬浮标本体、唤起后才出现的输入条，以及目标选择面板。
+ * 四个窗口：常驻桌面的悬浮标本体、输入条、目标选择面板，以及临时篮子。
  */
 
 import { BrowserWindow, screen, shell } from 'electron';
@@ -98,7 +98,7 @@ function surfaceOptions(): Electron.BrowserWindowConstructorOptions {
 /**
  * 宠物窗口尺寸。
  *
- * 本体是一条 125×52 的横向胶囊，四周留出余量给投影和状态气泡。
+ * 本体是一条 177×52 的横向胶囊，四周留出余量给投影和状态气泡。
  * 刻意不做大：这是个常驻置顶的透明窗口，多出来的透明区域一样会挡住桌面点击。
  * 目标面板因此独立成窗口，不占这里的空间。
  */
@@ -161,8 +161,8 @@ let suspendPositionSave = false;
 /** 撑大前的窗口矩形，缩回时原样还回去。 */
 let petRestoreBounds: Electron.Rectangle | null = null;
 
-/** 三个渲染页面：悬浮标本体、输入条、目标面板。 */
-type RendererPage = 'pet' | 'input' | 'panel';
+/** 四个渲染页面：悬浮标本体、输入条、目标面板、临时篮子。 */
+type RendererPage = 'pet' | 'input' | 'panel' | 'basket';
 
 const isDev = !!process.env['ELECTRON_RENDERER_URL'];
 
@@ -371,6 +371,62 @@ export function createTargetPanel(): BrowserWindow {
   });
 
   return win;
+}
+
+/* ---------- 临时篮子 ---------- */
+
+const BASKET_SIZE = { width: 460, height: 330 };
+const BASKET_GAP = 18;
+
+/**
+ * Tokri 风格的临时篮子窗口。
+ *
+ * 不在 blur 时自动隐藏：外部拖放期间焦点仍属于来源应用，若沿用目标面板的
+ * blur 规则，窗口会在用户还没把文件拖进来前自行消失。
+ */
+export function createBasketWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    ...BASKET_SIZE,
+    ...surfaceOptions(),
+    frame: false,
+    resizable: true,
+    minWidth: 340,
+    minHeight: 240,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    webPreferences: {
+      preload: preloadPath,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+
+  win.setAlwaysOnTop(true, 'screen-saver');
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  loadPage(win, 'basket');
+  return win;
+}
+
+/** 把篮子摆到鼠标旁边，并夹在当前屏幕工作区内。 */
+export function showBasketNearCursor(win: BrowserWindow, activate: boolean): void {
+  if (win.isDestroyed()) return;
+  const cursor = screen.getCursorScreenPoint();
+  const { workArea } = screen.getDisplayNearestPoint(cursor);
+  const bounds = win.getBounds();
+
+  let x = cursor.x + BASKET_GAP;
+  let y = cursor.y + BASKET_GAP;
+  if (x + bounds.width > workArea.x + workArea.width) x = cursor.x - bounds.width - BASKET_GAP;
+  if (y + bounds.height > workArea.y + workArea.height) y = cursor.y - bounds.height - BASKET_GAP;
+  x = Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - bounds.width));
+  y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - bounds.height));
+
+  win.setPosition(Math.round(x), Math.round(y), false);
+  if (activate) win.show();
+  else win.showInactive();
+  win.moveTop();
 }
 
 /**

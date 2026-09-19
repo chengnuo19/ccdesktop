@@ -5,7 +5,7 @@
  * 只能调用这里显式列出的几个方法。
  */
 
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Celebration, PetState, PromptCategoryId } from '@xfb/shared';
 
 export interface TargetSummary {
@@ -56,6 +56,15 @@ export interface PanelData {
   targets: TargetStatus[];
   /** 这次要投给哪些目标，第一个是主目标。通常只有一个。 */
   currentTargetIds: string[];
+}
+
+export interface BasketItem {
+  id: string;
+  name: string;
+  kind: 'file' | 'directory' | 'text' | 'url' | 'image';
+  size: number;
+  createdAt: number;
+  thumbnail?: string;
 }
 
 /** 投递全都失败时随 opened 一起回来的文本，见主进程的 restoreInput。 */
@@ -131,6 +140,9 @@ const api = {
   /** 打开目标选择面板。 */
   openMenu: (): void => ipcRenderer.send('pet:menu'),
 
+  /** 打开 Tokri 风格的临时篮子。 */
+  openBasket: (): void => ipcRenderer.send('basket:open'),
+
   /** 上报本体在窗口内的位置，供主进程做鼠标命中判断。 */
   reportHitRect: (rect: { left: number; top: number; width: number; height: number }): void =>
     ipcRenderer.send('pet:hit-rect', rect),
@@ -196,6 +208,49 @@ const api = {
     const handler = () => cb();
     ipcRenderer.on('clips:changed', handler);
     return () => ipcRenderer.off('clips:changed', handler);
+  },
+
+  /* ---------- 临时篮子 ---------- */
+
+  listBasketItems: (): Promise<BasketItem[]> => ipcRenderer.invoke('basket:list'),
+
+  /**
+   * Electron 32 起 File.path 已移除，必须在 preload 里用 webUtils 取真实路径。
+   * 没有磁盘路径的内存图片（例如网页直接拖出的图片）转成 base64 交给主进程落盘。
+   */
+  addToBasket: async (
+    files: File[],
+    text: string,
+  ): Promise<{ added: number; message?: string }> => {
+    const paths: string[] = [];
+    const images: Array<{ name: string; mimeType: string; base64: string }> = [];
+
+    for (const file of files) {
+      const filePath = webUtils.getPathForFile(file);
+      if (filePath) {
+        paths.push(filePath);
+      } else if (file.type.startsWith('image/')) {
+        const bytes = Buffer.from(await file.arrayBuffer());
+        images.push({ name: file.name, mimeType: file.type, base64: bytes.toString('base64') });
+      }
+    }
+
+    return ipcRenderer.invoke('basket:add', { paths, images, text });
+  },
+
+  openBasketItem: (id: string): Promise<boolean> => ipcRenderer.invoke('basket:open-item', id),
+  dragBasketItem: (id: string): void => ipcRenderer.send('basket:drag-item', id),
+  showBasketItemMenu: (id: string): void => ipcRenderer.send('basket:item-menu', id),
+  closeBasket: (): void => ipcRenderer.send('basket:close'),
+  onBasketChanged: (cb: () => void): (() => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('basket:changed', handler);
+    return () => ipcRenderer.off('basket:changed', handler);
+  },
+  onBasketToast: (cb: (message: string) => void): (() => void) => {
+    const handler = (_event: unknown, message: string) => cb(message);
+    ipcRenderer.on('basket:toast', handler);
+    return () => ipcRenderer.off('basket:toast', handler);
   },
 
   /* ---------- 目标面板 ---------- */

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>悬浮标 · 临时篮子</title>
+    <link rel="stylesheet" href="./tokens.css" />
+    <link rel="stylesheet" href="./basket.css" />
+  </head>
+  <body>
+    <main class="basket" id="basket">
+      <header class="titlebar">
+        <div>
+          <h1>临时篮子</h1>
+          <p>把文件、文件夹、文本、链接或图片拖进来</p>
+        </div>
+        <button id="closeButton" type="button" title="关闭" aria-label="关闭">×</button>
+      </header>
+
+      <section class="items" id="items" aria-live="polite"></section>
+
+      <section class="empty" id="empty">
+        <div class="basket-mark" aria-hidden="true">⌄</div>
+        <strong>篮子还是空的</strong>
+        <span>拖动内容时左右摇一下鼠标，就能随手把它放进来</span>
+      </section>
+
+      <div class="drop-mask" id="dropMask" aria-hidden="true">
+        <div>松手放进篮子</div>
+      </div>
+
+      <footer>
+        <span id="summary">0 项</span>
+        <span>双击打开 · 右键管理 · 拖出使用</span>
+      </footer>
+      <div class="toast" id="toast" hidden></div>
+    </main>
+    <script type="module" src="./basket.ts"></script>
+  </body>
+</html>

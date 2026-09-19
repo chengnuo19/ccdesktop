@@ -15,11 +15,13 @@ $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
 
 $nativeSource = @"
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 public class Xfb {
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
@@ -42,7 +44,17 @@ public class Xfb {
   // 因此可以高频轮询——这是判断「剪贴板变没变」唯一划算的办法。
   [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
   [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
+  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SetWindowsHookEx(int hookId, LowLevelMouseProc callback, IntPtr module, uint threadId);
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool UnhookWindowsHookEx(IntPtr hook);
+  [DllImport("user32.dll")] public static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
+  [DllImport("user32.dll")] public static extern int GetMessage(out MSG message, IntPtr window, uint min, uint max);
+  [DllImport("user32.dll")] public static extern bool PostThreadMessage(uint threadId, uint message, IntPtr wParam, IntPtr lParam);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr GetModuleHandle(string moduleName);
+  public delegate IntPtr LowLevelMouseProc(int code, IntPtr message, IntPtr data);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct MSLLHOOKSTRUCT { public POINT Point; public uint MouseData, Flags, Time; public UIntPtr ExtraInfo; }
+  [StructLayout(LayoutKind.Sequential)] public struct MSG { public IntPtr Hwnd; public uint Message; public UIntPtr WParam; public IntPtr LParam; public uint Time; public POINT Point; public uint LPrivate; }
 
   public const int SW_RESTORE = 9;
   public const uint KEYEVENTF_KEYUP = 0x0002;
@@ -50,6 +62,152 @@ public class Xfb {
   public const byte VK_MENU = 0x12;
   public const byte VK_V = 0x56;
   public const byte VK_RETURN = 0x0D;
+  public const int WH_MOUSE_LL = 14;
+  public const int WM_MOUSEMOVE = 0x0200;
+  public const int WM_LBUTTONDOWN = 0x0201;
+  public const int WM_LBUTTONUP = 0x0202;
+  public const uint WM_QUIT = 0x0012;
+
+  // Tokri-style activation gesture: while the left button is held, three quick
+  // horizontal direction changes reveal the basket. The thresholds mirror Tokri's
+  // HorizontalShakeDetector (MIT): 8..100 px movements, at most 200 ms apart.
+  private sealed class HorizontalShakeDetector {
+    private int lastDirection;
+    private int flips;
+    private uint lastTime;
+
+    public bool Feed(int dx, uint time) {
+      int distance = Math.Abs(dx);
+      if (distance < 8 || distance > 100 || dx == 0) return false;
+
+      int direction = dx > 0 ? 1 : -1;
+      if (lastDirection == 0 || unchecked(time - lastTime) > 200) {
+        lastDirection = direction;
+        flips = 0;
+        lastTime = time;
+        return false;
+      }
+
+      if (direction != lastDirection) {
+        flips++;
+        lastDirection = direction;
+        lastTime = time;
+        if (flips >= 3) {
+          Reset();
+          return true;
+        }
+      } else {
+        lastTime = time;
+      }
+      return false;
+    }
+
+    public void Reset() {
+      lastDirection = 0;
+      flips = 0;
+      lastTime = 0;
+    }
+  }
+
+  private static readonly object ShakeLock = new object();
+  private static readonly HorizontalShakeDetector ShakeDetector = new HorizontalShakeDetector();
+  private static readonly LowLevelMouseProc ShakeCallback = ShakeMouseProc;
+  private static Thread shakeThread;
+  private static ManualResetEventSlim shakeReady;
+  private static IntPtr shakeHook = IntPtr.Zero;
+  private static uint shakeThreadId;
+  private static bool leftButtonDown;
+  private static int lastMouseX;
+  private static int shakeSignal;
+  private static int shakeHookEvents;
+  private static int shakeDragMoves;
+  private static int shakeQualifyingMoves;
+  private static int shakeDirectionChanges;
+  private static int shakeObservedDirection;
+  private static int shakeLastDx;
+
+  public static bool StartShakeWatcher() {
+    lock (ShakeLock) {
+      if (shakeThread != null && shakeThread.IsAlive) return shakeHook != IntPtr.Zero;
+      shakeReady = new ManualResetEventSlim(false);
+      shakeThread = new Thread(ShakeLoop) { IsBackground = true, Name = "XfbShakeWatcher" };
+      shakeThread.Start();
+    }
+    shakeReady.Wait(2000);
+    return shakeHook != IntPtr.Zero;
+  }
+
+  private static void ShakeLoop() {
+    shakeThreadId = GetCurrentThreadId();
+    shakeHook = SetWindowsHookEx(WH_MOUSE_LL, ShakeCallback, GetModuleHandle(null), 0);
+    shakeReady.Set();
+    if (shakeHook == IntPtr.Zero) return;
+
+    MSG message;
+    while (GetMessage(out message, IntPtr.Zero, 0, 0) > 0) { }
+    UnhookWindowsHookEx(shakeHook);
+    shakeHook = IntPtr.Zero;
+  }
+
+  private static IntPtr ShakeMouseProc(int code, IntPtr message, IntPtr data) {
+    if (code >= 0) {
+      Interlocked.Increment(ref shakeHookEvents);
+      int kind = message.ToInt32();
+      if (kind == WM_LBUTTONDOWN) {
+        leftButtonDown = true;
+        lastMouseX = 0;
+        shakeObservedDirection = 0;
+        ShakeDetector.Reset();
+      } else if (kind == WM_LBUTTONUP) {
+        leftButtonDown = false;
+        lastMouseX = 0;
+        ShakeDetector.Reset();
+      } else if (kind == WM_MOUSEMOVE && leftButtonDown) {
+        Interlocked.Increment(ref shakeDragMoves);
+        MSLLHOOKSTRUCT mouse = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(data, typeof(MSLLHOOKSTRUCT));
+        int dx = lastMouseX == 0 ? 0 : mouse.Point.X - lastMouseX;
+        lastMouseX = mouse.Point.X;
+        shakeLastDx = dx;
+        if (Math.Abs(dx) >= 8 && Math.Abs(dx) <= 100) {
+          Interlocked.Increment(ref shakeQualifyingMoves);
+          int direction = dx > 0 ? 1 : -1;
+          if (shakeObservedDirection != 0 && direction != shakeObservedDirection) {
+            Interlocked.Increment(ref shakeDirectionChanges);
+          }
+          shakeObservedDirection = direction;
+        }
+        if (dx != 0 && ShakeDetector.Feed(dx, mouse.Time)) {
+          Interlocked.Exchange(ref shakeSignal, 1);
+        }
+      }
+    }
+    return CallNextHookEx(shakeHook, code, message, data);
+  }
+
+  public static bool ConsumeShake() {
+    return Interlocked.Exchange(ref shakeSignal, 0) == 1;
+  }
+
+  public static int ShakeHookEvents { get { return Volatile.Read(ref shakeHookEvents); } }
+  public static int ShakeDragMoves { get { return Volatile.Read(ref shakeDragMoves); } }
+  public static int ShakeQualifyingMoves { get { return Volatile.Read(ref shakeQualifyingMoves); } }
+  public static int ShakeDirectionChanges { get { return Volatile.Read(ref shakeDirectionChanges); } }
+  public static int ShakeLastDx { get { return Volatile.Read(ref shakeLastDx); } }
+
+  public static void StopShakeWatcher() {
+    uint threadId = shakeThreadId;
+    if (threadId != 0) PostThreadMessage(threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+  }
+
+  public static bool ShakeSelfTest() {
+    HorizontalShakeDetector detector = new HorizontalShakeDetector();
+    bool tooSlow = detector.Feed(20, 100) || detector.Feed(-20, 400);
+    detector.Reset();
+    bool jitter = detector.Feed(4, 100) || detector.Feed(-4, 140) || detector.Feed(4, 180) || detector.Feed(-4, 220);
+    detector.Reset();
+    bool detected = detector.Feed(20, 100) || detector.Feed(-20, 140) || detector.Feed(20, 180) || detector.Feed(-20, 220);
+    return !tooSlow && !jitter && detected;
+  }
 
   // 把目标窗口拉到前台。
   //
@@ -121,6 +279,21 @@ function Write-Response($id, $payload) {
 function ConvertFrom-B64($s) {
   if ([string]::IsNullOrEmpty($s)) { return '' }
   return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($s))
+}
+
+function Set-FileDropClipboard($encodedPaths) {
+  $files = New-Object System.Collections.Specialized.StringCollection
+  foreach ($encodedPath in @($encodedPaths)) {
+    $candidate = ConvertFrom-B64 $encodedPath
+    if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+    if (-not [System.IO.Path]::IsPathRooted($candidate)) { continue }
+    if (-not (Test-Path -LiteralPath $candidate)) { continue }
+    $resolved = (Resolve-Path -LiteralPath $candidate).Path
+    $null = $files.Add($resolved)
+  }
+  if ($files.Count -eq 0) { return $false }
+  [System.Windows.Forms.Clipboard]::SetFileDropList($files)
+  return $true
 }
 
 # 按进程名 + 窗口类名定位主窗口。
@@ -302,6 +475,27 @@ while ($true) {
           ok = $true
           seq = [int64][Xfb]::GetClipboardSequenceNumber()
         }
+      }
+      'clipboard-files' {
+        Write-Response $reqId @{ ok = (Set-FileDropClipboard $req.paths) }
+      }
+      'shake-start' {
+        Write-Response $reqId @{ ok = [Xfb]::StartShakeWatcher() }
+      }
+      'shake-take' {
+        $started = [Xfb]::StartShakeWatcher()
+        Write-Response $reqId @{
+          ok = $started
+          detected = ($started -and [Xfb]::ConsumeShake())
+          hookEvents = [Xfb]::ShakeHookEvents
+          dragMoves = [Xfb]::ShakeDragMoves
+          qualifyingMoves = [Xfb]::ShakeQualifyingMoves
+          directionChanges = [Xfb]::ShakeDirectionChanges
+          lastDx = [Xfb]::ShakeLastDx
+        }
+      }
+      'shake-selftest' {
+        Write-Response $reqId @{ ok = [Xfb]::ShakeSelfTest() }
       }
       'ping' {
         Write-Response $reqId @{ ok = $true; pong = $true }

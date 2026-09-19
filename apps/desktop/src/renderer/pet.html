@@ -16,7 +16,7 @@
   <body>
     <!--
       两种形态共用一个 .pill 容器：
-      待机时是横向胶囊（两个按钮），送出后收拢成 52×52 的圆，圆上跑进度环。
+      待机时是横向胶囊（三个按钮），送出后收拢成 52×52 的圆，圆上跑进度环。
       形态切换靠 CSS 过渡 width，所以是连续变形而不是两个元素互相替换。
     -->
     <div class="stage" id="stage" data-phase="idle" data-mode="indeterminate">
@@ -40,6 +40,17 @@
                  stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3z" />
               <path d="M14.5 7.5 17 10" />
+            </svg>
+          </button>
+
+          <span class="divider"></span>
+
+          <!-- 临时篮子：也可在拖动内容时左右摇鼠标唤出 -->
+          <button class="act" id="btnBasket" type="button" title="临时篮子" aria-label="临时篮子">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 8.5h16l-1.4 10H5.4l-1.4-10z" />
+              <path d="m8 8.5 2-4M16 8.5l-2-4M8.5 12.5v2.5M12 12.5v2.5M15.5 12.5v2.5" />
             </svg>
           </button>
 

@@ -21,6 +21,7 @@ import {
   createInputWindow,
   createPetWindow,
   createTargetPanel,
+  createBasketWindow,
   markInputShown,
   positionInputWindow,
   positionTargetPanel,
@@ -28,6 +29,7 @@ import {
   acrylicAvailable,
   expandPetWindow,
   restorePetWindow,
+  showBasketNearCursor,
 } from './windows.js';
 import { orchestrator, type SubmitOutcome } from './orchestrator.js';
 import { win32Helper } from './win32/helper.js';
@@ -41,6 +43,19 @@ import { clipboardWatcher } from './clipboard/watcher.js';
 import { installFileLogging, openLogsDir } from './logfile.js';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
+import { unlink, writeFile } from 'node:fs/promises';
+import {
+  addImagesToBasket,
+  addPathsToBasket,
+  addTextToBasket,
+  basketCopyPayload,
+  listBasketItems,
+  openBasketItem,
+  resolveBasketItemSync,
+  revealBasketItem,
+  trashBasketItem,
+  type EmbeddedImage,
+} from './basket/store.js';
 
 /*
   日志写不出去，不能把整个程序带走。
@@ -118,10 +133,13 @@ let activeHotkey: string | null = null;
 let petWindow: BrowserWindow | null = null;
 let inputWindow: BrowserWindow | null = null;
 let targetPanel: BrowserWindow | null = null;
+let basketWindow: BrowserWindow | null = null;
 let hoverTracker: HoverTracker | null = null;
 let tray: Tray | null = null;
 let bridge: BridgeServer | null = null;
 let bridgeToken = '';
+let shakePollTimer: NodeJS.Timeout | null = null;
+let shakePollInFlight = false;
 
 /**
  * 重建托盘菜单。由 buildTray 填上。
@@ -348,6 +366,76 @@ function showTargetPanel(): void {
   void refreshPanelStatuses();
 }
 
+function showBasket(activate: boolean): void {
+  if (!basketWindow || basketWindow.isDestroyed()) return;
+  if (basketWindow.isVisible()) {
+    basketWindow.moveTop();
+    if (activate) basketWindow.focus();
+    return;
+  }
+  showBasketNearCursor(basketWindow, activate);
+  console.log(`[临时篮子] 已由${activate ? '按钮' : '摇动手势'}唤出`);
+}
+
+function notifyBasketChanged(): void {
+  if (!basketWindow || basketWindow.isDestroyed()) return;
+  basketWindow.webContents.send('basket:changed');
+}
+
+async function copyBasketItem(id: string): Promise<boolean> {
+  const payload = await basketCopyPayload(id);
+  if (!payload) return false;
+
+  return clipboardWatcher.suppress(async () => {
+    if (payload.kind === 'text' || payload.kind === 'url') {
+      clipboard.writeText(payload.text ?? '');
+      return true;
+    }
+
+    if (payload.kind === 'image') {
+      const image = nativeImage.createFromPath(payload.path);
+      if (image.isEmpty()) return false;
+      clipboard.writeImage(image);
+      return true;
+    }
+
+    const encodedPath = Buffer.from(payload.path, 'utf8').toString('base64');
+    const response = await win32Helper.send('clipboard-files', { paths: [encodedPath] });
+    return response.ok === true;
+  });
+}
+
+/**
+ * helper 持有 WH_MOUSE_LL 钩子，主进程只轮询一个一次性标志。
+ * 同一时刻最多一条请求，避免 helper 忙于投递或 UIA 探测时堆出请求队列。
+ */
+async function pollBasketShake(): Promise<void> {
+  if (shakePollInFlight) return;
+  shakePollInFlight = true;
+  try {
+    const result = await win32Helper.send('shake-take');
+    if (result.ok && result['detected'] === true) showBasket(false);
+  } catch (err) {
+    console.warn('[临时篮子] 摇动检测暂不可用：', err);
+  } finally {
+    shakePollInFlight = false;
+  }
+}
+
+async function startBasketShakeMonitor(): Promise<void> {
+  try {
+    const result = await win32Helper.send('shake-start');
+    if (!result.ok) {
+      console.warn('[临时篮子] 全局鼠标钩子启动失败，仍可用按钮或托盘打开');
+      return;
+    }
+    console.log('[临时篮子] 已启用拖动时摇鼠标唤出');
+    shakePollTimer = setInterval(() => void pollBasketShake(), 90);
+  } catch (err) {
+    console.warn('[临时篮子] 摇动检测启动失败，仍可用按钮或托盘打开：', err);
+  }
+}
+
 /** 把最新的可用性推给面板。面板没开着就不用白费劲。 */
 async function refreshPanelStatuses(): Promise<void> {
   if (!targetPanel || targetPanel.isDestroyed() || !targetPanel.isVisible()) return;
@@ -403,6 +491,10 @@ function buildTray(): void {
 
   const refreshMenu = () => {
     const menu = Menu.buildFromTemplate([
+      {
+        label: '打开临时篮子',
+        click: () => showBasket(true),
+      },
       {
         // 实际生效的快捷键要如实显示：候选可能被占用而降级到了别的组合。
         label: activeHotkey ? `唤起输入条（${activeHotkey}）` : '唤起输入条（快捷键全被占用）',
@@ -679,6 +771,75 @@ function registerIpc(): void {
   */
   ipcMain.on('pet:menu', () => showTargetPanel());
 
+  ipcMain.on('basket:open', () => showBasket(true));
+  ipcMain.on('basket:close', () => basketWindow?.hide());
+
+  ipcMain.handle('basket:list', () => listBasketItems());
+
+  ipcMain.handle('basket:add', async (_e, payload: {
+    paths?: string[];
+    images?: EmbeddedImage[];
+    text?: string;
+  }) => {
+    const paths = Array.isArray(payload.paths) ? payload.paths.filter((p): p is string => typeof p === 'string') : [];
+    const images = Array.isArray(payload.images) ? payload.images : [];
+    let added = await addPathsToBasket(paths);
+    added += await addImagesToBasket(images);
+
+    // 文件拖放通常还会附送 text/uri-list；已经收下文件时不能再多造一份链接文本。
+    if (added === 0 && typeof payload.text === 'string' && payload.text.trim()) {
+      if (await addTextToBasket(payload.text.slice(0, 2_000_000))) added++;
+    }
+    if (added > 0) notifyBasketChanged();
+    return { added, message: added === 0 ? '内容为空或无法读取' : undefined };
+  });
+
+  ipcMain.handle('basket:open-item', (_e, id: string) => openBasketItem(id));
+
+  ipcMain.on('basket:drag-item', (event, id: string) => {
+    const itemPath = resolveBasketItemSync(id);
+    if (!itemPath) return;
+    const dragIcon = nativeImage.createFromPath(itemPath);
+    event.sender.startDrag({
+      file: itemPath,
+      icon: dragIcon.isEmpty() ? trayIconPath() : dragIcon.resize({ width: 64, height: 64 }),
+    });
+    // Windows 的默认操作可能把同卷文件移出篮子；拖放结束后按磁盘实况刷新。
+    notifyBasketChanged();
+  });
+
+  ipcMain.on('basket:item-menu', (event, id: string) => {
+    const owner = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const sender = event.sender;
+    const menu = Menu.buildFromTemplate([
+      { label: '打开', click: () => void openBasketItem(id) },
+      {
+        label: '复制',
+        click: () => {
+          void copyBasketItem(id)
+            .then((ok) => {
+              if (!sender.isDestroyed()) sender.send('basket:toast', ok ? '已复制' : '复制失败');
+            })
+            .catch((err) => {
+              console.warn('[临时篮子] 复制失败：', err);
+              if (!sender.isDestroyed()) sender.send('basket:toast', '复制失败');
+            });
+        },
+      },
+      { label: '在资源管理器中显示', click: () => void revealBasketItem(id) },
+      { type: 'separator' },
+      {
+        label: '移到回收站',
+        click: () => {
+          void trashBasketItem(id).then((ok) => {
+            if (ok) notifyBasketChanged();
+          });
+        },
+      },
+    ]);
+    menu.popup({ window: owner });
+  });
+
   ipcMain.on('panel:close', () => targetPanel?.hide());
 
   /*
@@ -846,22 +1007,25 @@ if (!gotLock) {
     petWindow = createPetWindow();
     inputWindow = createInputWindow();
     targetPanel = createTargetPanel();
+    basketWindow = createBasketWindow();
 
     /*
-      走亚克力的那两扇窗口要单独去要一个圆角，见 applyRoundCorners。
+      走亚克力的三扇窗口要单独去要一个圆角，见 applyRoundCorners。
       不 await：圆角晚几十毫秒设上没关系，两扇窗口这时都还没显示过。
     */
     void applyRoundCorners(inputWindow, '输入条');
     void applyRoundCorners(targetPanel, '目标面板');
+    void applyRoundCorners(basketWindow, '临时篮子');
 
     /*
-      把两个渲染窗口的 console 转发到主进程日志。
+      把三个渲染窗口的 console 转发到主进程日志。
       没有这个，渲染层的报错完全是黑箱——脚本挂了也只会表现为
       「界面在，但什么都不响应」，极难定位。
     */
     for (const [name, win] of [
       ['悬浮标', petWindow],
       ['输入条', inputWindow],
+      ['临时篮子', basketWindow],
     ] as const) {
       win.webContents.on('console-message', (_e, level, message, line, source) => {
         const tag = level >= 2 ? '错误' : '日志';
@@ -937,6 +1101,34 @@ if (!gotLock) {
     void win32Helper.start().catch((err) => {
       console.error('助手进程启动失败：', err);
     });
+    void startBasketShakeMonitor();
+
+    if (process.env['XFB_BASKET_TEST'] === '1') {
+      setTimeout(() => {
+        void (async () => {
+          const source = path.join(app.getPath('temp'), `xfb-basket-source-${process.pid}.txt`);
+          try {
+            await writeFile(source, '临时篮子路径复制自检', 'utf8');
+            const textAdded = await addTextToBasket('临时篮子运行时自检');
+            const pathAdded = (await addPathsToBasket([source])) === 1;
+            const imageAdded = (await addImagesToBasket([{
+              name: '自检图片.png',
+              mimeType: 'image/png',
+              base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+            }])) === 1;
+            const items = await listBasketItems();
+            const passed = textAdded && pathAdded && imageAdded
+              && items.some((item) => item.kind === 'text')
+              && items.some((item) => item.kind === 'image');
+            console.log(`[临时篮子自检] ${passed ? '通过' : '失败'}：文本/路径/图片落盘后共 ${items.length} 项`);
+            notifyBasketChanged();
+            showBasket(true);
+          } finally {
+            await unlink(source).catch(() => {});
+          }
+        })();
+      }, 1_500);
+    }
 
     /*
       剪贴板监视。放在助手之后启动——它靠助手拿剪贴板序列号来判断内容变没变，
@@ -961,6 +1153,7 @@ if (!gotLock) {
 
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
+    if (shakePollTimer) clearInterval(shakePollTimer);
     hoverTracker?.stop();
     clipboardWatcher.stop();
     orchestrator.dispose();

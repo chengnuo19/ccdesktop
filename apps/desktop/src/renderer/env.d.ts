@@ -47,6 +47,15 @@ export interface ClipSummary {
   copiedAt: number;
 }
 
+export interface BasketItem {
+  id: string;
+  name: string;
+  kind: 'file' | 'directory' | 'text' | 'url' | 'image';
+  size: number;
+  createdAt: number;
+  thumbnail?: string;
+}
+
 /** 投递全都失败时随 opened 一起回来的文本，见主进程的 restoreInput。 */
 export interface InputRestore {
   text: string;
@@ -69,6 +78,7 @@ export interface XfbApi {
   closeInput(): void;
   activate(): void;
   openMenu(): void;
+  openBasket(): void;
   reportHitRect(rect: { left: number; top: number; width: number; height: number }): void;
   onHover(cb: (hovering: boolean) => void): () => void;
   onCelebrate(cb: (c: Celebration) => void): () => void;
@@ -86,6 +96,16 @@ export interface XfbApi {
   putClipImage(id: string): Promise<boolean>;
   clearClips(): Promise<void>;
   onClipsChanged(cb: () => void): () => void;
+
+  /* 临时篮子 */
+  listBasketItems(): Promise<BasketItem[]>;
+  addToBasket(files: File[], text: string): Promise<{ added: number; message?: string }>;
+  openBasketItem(id: string): Promise<boolean>;
+  dragBasketItem(id: string): void;
+  showBasketItemMenu(id: string): void;
+  closeBasket(): void;
+  onBasketChanged(cb: () => void): () => void;
+  onBasketToast(cb: (message: string) => void): () => void;
 
   /* 目标面板 */
   panelReady(): Promise<PanelData>;

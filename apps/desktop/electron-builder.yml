@@ -20,6 +20,8 @@ files:
 # 代码里已经写好 app.isPackaged -> process.resourcesPath 的分支，
 # 这里的 to 就是那个分支要找的位置。
 extraResources:
+  - from: ../../THIRD_PARTY_NOTICES.md
+    to: THIRD_PARTY_NOTICES.md
   - from: resources/win32-helper.ps1
     to: win32-helper.ps1
   - from: resources/tray.png

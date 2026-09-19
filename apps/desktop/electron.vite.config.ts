@@ -34,6 +34,7 @@ export default defineConfig({
           pet: resolve(__dirname, 'src/renderer/pet.html'),
           input: resolve(__dirname, 'src/renderer/input.html'),
           panel: resolve(__dirname, 'src/renderer/panel.html'),
+          basket: resolve(__dirname, 'src/renderer/basket.html'),
         },
       },
     },

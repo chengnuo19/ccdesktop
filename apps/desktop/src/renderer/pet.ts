@@ -23,11 +23,12 @@ const ringArc = document.getElementById('ringArc');
 const ringSegs = document.getElementById('ringSegs');
 const bubble = document.getElementById('bubble');
 const btnCompose = document.getElementById('btnCompose');
+const btnBasket = document.getElementById('btnBasket');
 const btnMenu = document.getElementById('btnMenu');
 /* 圆心那个点。只有庆祝动画会主动碰它，平时归 CSS 管，所以不进下面的必需检查。 */
 const core = document.getElementById('core');
 
-if (!stage || !pill || !ringArc || !ringSegs || !bubble || !btnCompose || !btnMenu) {
+if (!stage || !pill || !ringArc || !ringSegs || !bubble || !btnCompose || !btnBasket || !btnMenu) {
   throw new Error('悬浮标的 DOM 结构不完整');
 }
 
@@ -490,6 +491,8 @@ pill.addEventListener('click', (e) => {
 });
 
 btnCompose.addEventListener('click', () => window.xfb.activate());
+
+btnBasket.addEventListener('click', () => window.xfb.openBasket());
 
 btnMenu.addEventListener('click', () => window.xfb.openMenu());
 
