@@ -1,6 +1,6 @@
 {
   "name": "xuanfubiao",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "悬浮标 — 桌面悬浮 AI 宠物，快速把问题送进 ChatGPT / Gemini",
   "scripts": {
